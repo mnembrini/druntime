@@ -5,7 +5,7 @@
  * License: Distributed under the
  *      $(LINK2 http://www.boost.org/LICENSE_1_0.txt, Boost Software License 1.0).
  *    (See accompanying file LICENSE)
- * Authors:   Sean Kelly, Walter Bright, Alex Rønne Petersen
+ * Authors:   Sean Kelly, Walter Bright, Alex Rønne Petersen, Martin Nowak
  * Source:    $(DRUNTIMESRC core/_thread.d)
  */
 
@@ -13,6 +13,7 @@ module core.thread;
 
 
 public import core.time; // for Duration
+import core.exception : onOutOfMemoryError;
 static import rt.tlsgc;
 
 // this should be true for most architectures
@@ -47,12 +48,12 @@ else version (Windows)
  */
 class ThreadException : Exception
 {
-    this(string msg, string file = __FILE__, size_t line = __LINE__, Throwable next = null)
+    @safe pure nothrow this(string msg, string file = __FILE__, size_t line = __LINE__, Throwable next = null)
     {
         super(msg, file, line, next);
     }
 
-    this(string msg, Throwable next, string file = __FILE__, size_t line = __LINE__)
+    @safe pure nothrow this(string msg, Throwable next, string file = __FILE__, size_t line = __LINE__)
     {
         super(msg, file, line, next);
     }
@@ -64,12 +65,12 @@ class ThreadException : Exception
  */
 class FiberException : Exception
 {
-    this(string msg, string file = __FILE__, size_t line = __LINE__, Throwable next = null)
+    @safe pure nothrow this(string msg, string file = __FILE__, size_t line = __LINE__, Throwable next = null)
     {
         super(msg, file, line, next);
     }
 
-    this(string msg, Throwable next, string file = __FILE__, size_t line = __LINE__)
+    @safe pure nothrow this(string msg, Throwable next, string file = __FILE__, size_t line = __LINE__)
     {
         super(msg, file, line, next);
     }
@@ -114,7 +115,7 @@ version( Windows )
     private
     {
         import core.stdc.stdint : uintptr_t; // for _beginthreadex decl below
-        import core.stdc.stdlib;             // for malloc
+        import core.stdc.stdlib;             // for malloc, atexit
         import core.sys.windows.windows;
         import core.sys.windows.threadaux;   // for OpenThreadHandle
 
@@ -123,40 +124,6 @@ version( Windows )
 
         extern (Windows) alias uint function(void*) btex_fptr;
         extern (C) uintptr_t _beginthreadex(void*, uint, btex_fptr, void*, uint, uint*);
-
-        version( DigitalMars )
-        {
-            version (Win32)
-            {
-                // NOTE: The memory between the addresses of _tlsstart and _tlsend
-                //       is the storage for thread-local data in D 2.0.  Both of
-                //       these are defined in dm\src\win32\tlsseg.asm by DMC.
-                extern (C)
-                {
-                    extern int _tlsstart;
-                    extern int _tlsend;
-                }
-            }
-            version (Win64)
-            {
-                // NOTE: The memory between the addresses of _tls_start and _tls_end
-                //       is the storage for thread-local data in D 2.0.  Both of
-                //       these are defined in LIBCMT:tlssub.obj
-                extern (C)
-                {
-                    extern int _tls_start;
-                    extern int _tls_end;
-                }
-                alias _tls_start _tlsstart;
-                alias _tls_end   _tlsend;
-            }
-        }
-        else
-        {
-            __gshared int   _tlsstart;
-            alias _tlsstart _tlsend;
-        }
-
 
         //
         // Entry point for Windows threads
@@ -169,10 +136,7 @@ version( Windows )
             assert( obj.m_curr is &obj.m_main );
             obj.m_main.bstack = getStackBottom();
             obj.m_main.tstack = obj.m_main.bstack;
-
-            void* pstart = cast(void*) &_tlsstart;
-            void* pend   = cast(void*) &_tlsend;
-            obj.m_tls = pstart[0 .. pend - pstart];
+            obj.m_tlsgcdata = rt.tlsgc.init();
 
             Thread.setThis( obj );
             //Thread.add( obj );
@@ -181,7 +145,6 @@ version( Windows )
                 Thread.remove( obj );
             }
             Thread.add( &obj.m_main );
-            obj.m_tlsgcdata = rt.tlsgc.init();
 
             // NOTE: No GC allocations may occur until the stack pointers have
             //       been set and Thread.getThis returns a valid reference to
@@ -251,7 +214,7 @@ else version( Posix )
     {
         import core.stdc.errno;
         import core.sys.posix.semaphore;
-        import core.sys.posix.stdlib; // for malloc, valloc, free
+        import core.sys.posix.stdlib; // for malloc, valloc, free, atexit
         import core.sys.posix.pthread;
         import core.sys.posix.signal;
         import core.sys.posix.time;
@@ -267,76 +230,28 @@ else version( Posix )
             import gcc.builtins;
         }
 
-        version( DigitalMars )
-        {
-            version( linux )
-            {
-                extern (C)
-                {
-                    extern int _tlsstart;
-                    extern int _tlsend;
-                }
-            }
-            else version( OSX )
-            {
-                extern (C)
-                {
-                    __gshared void[][2] _tls_data_array;
-                }
-            }
-            else version( FreeBSD )
-            {
-                extern (C)
-                {
-                    extern void* _tlsstart;
-                    extern void* _tlsend;
-                }
-            }
-            else
-            {
-                __gshared int   _tlsstart;
-                alias _tlsstart _tlsend;
-            }
-        }
-        else
-        {
-            __gshared int   _tlsstart;
-            alias _tlsstart _tlsend;
-        }
-
-
         //
         // Entry point for POSIX threads
         //
         extern (C) void* thread_entryPoint( void* arg )
         {
-            Thread  obj = cast(Thread) arg;
+            version (Shared)
+            {
+                import rt.sections;
+                Thread obj = cast(Thread)(cast(void**)arg)[0];
+                auto loadedLibraries = (cast(void**)arg)[1];
+                .free(arg);
+            }
+            else
+            {
+                Thread obj = cast(Thread)arg;
+            }
             assert( obj );
 
             assert( obj.m_curr is &obj.m_main );
             obj.m_main.bstack = getStackBottom();
             obj.m_main.tstack = obj.m_main.bstack;
-
-            version (OSX)
-            {
-                // NOTE: OSX does not support TLS, so we do it ourselves.  The TLS
-                //       data output by the compiler is bracketed by _tls_data_array[2],
-                //       so make a copy of it for each thread.
-                const sz0 = (_tls_data_array[0].length + 15) & ~cast(size_t)15;
-                const sz2 = sz0 + _tls_data_array[1].length;
-                auto p = malloc( sz2 );
-                assert( p );
-                obj.m_tls = p[0 .. sz2];
-                memcpy( p, _tls_data_array[0].ptr, _tls_data_array[0].length );
-                memcpy( p + sz0, _tls_data_array[1].ptr, _tls_data_array[1].length );
-                scope (exit) { free( p ); obj.m_tls = null; }
-            }
-            else
-            {
-                auto pstart = cast(void*) &_tlsstart;
-                auto pend   = cast(void*) &_tlsend;
-                obj.m_tls = pstart[0 .. pend - pstart];
-            }
+            obj.m_tlsgcdata = rt.tlsgc.init();
 
             obj.m_isRunning = true;
             Thread.setThis( obj );
@@ -350,7 +265,6 @@ else version( Posix )
                 obj.m_isRunning = false;
             }
             Thread.add( &obj.m_main );
-            obj.m_tlsgcdata = rt.tlsgc.init();
 
             static extern (C) void thread_cleanupHandler( void* arg ) nothrow
             {
@@ -410,6 +324,7 @@ else version( Posix )
 
             try
             {
+                version (Shared) inheritLoadedLibraries(loadedLibraries);
                 rt_moduleTlsCtor();
                 try
                 {
@@ -420,6 +335,7 @@ else version( Posix )
                     append( t );
                 }
                 rt_moduleTlsDtor();
+                version (Shared) cleanupLoadedLibraries();
             }
             catch( Throwable t )
             {
@@ -732,8 +648,26 @@ class Thread
                 m_isRunning = true;
                 scope( failure ) m_isRunning = false;
 
-                if( pthread_create( &m_addr, &attr, &thread_entryPoint, cast(void*) this ) != 0 )
-                    throw new ThreadException( "Error creating thread" );
+                version (Shared)
+                {
+                    import rt.sections;
+                    auto libs = pinLoadedLibraries();
+                    auto ps = cast(void**).malloc(2 * size_t.sizeof);
+                    if (ps is null) onOutOfMemoryError();
+                    ps[0] = cast(void*)this;
+                    ps[1] = cast(void*)libs;
+                    if( pthread_create( &m_addr, &attr, &thread_entryPoint, ps ) != 0 )
+                    {
+                        unpinLoadedLibraries(libs);
+                        .free(ps);
+                        throw new ThreadException( "Error creating thread" );
+                    }
+                }
+                else
+                {
+                    if( pthread_create( &m_addr, &attr, &thread_entryPoint, cast(void*) this ) != 0 )
+                        throw new ThreadException( "Error creating thread" );
+                }
             }
             version( OSX )
             {
@@ -925,10 +859,19 @@ class Thread
     /**
      * The maximum scheduling priority that may be set for a thread.  On
      * systems where multiple scheduling policies are defined, this value
-     * represents the minimum valid priority for the scheduling policy of
+     * represents the maximum valid priority for the scheduling policy of
      * the process.
      */
     __gshared const int PRIORITY_MAX;
+
+
+    /**
+     * The default scheduling priority that is set for a thread.  On
+     * systems where multiple scheduling policies are defined, this value
+     * represents the default priority for the scheduling policy of
+     * the process.
+     */
+    __gshared const int PRIORITY_DEFAULT;
 
 
     /**
@@ -962,6 +905,12 @@ class Thread
      *  val = The new scheduling priority of this thread.
      */
     final @property void priority( int val )
+    in
+    {
+        assert(val >= PRIORITY_MIN);
+        assert(val <= PRIORITY_MAX);
+    }
+    body
     {
         version( Windows )
         {
@@ -970,22 +919,41 @@ class Thread
         }
         else version( Posix )
         {
-            // NOTE: pthread_setschedprio is not implemented on linux, so use
-            //       the more complicated get/set sequence below.
-            //if( pthread_setschedprio( m_addr, val ) )
-            //    throw new ThreadException( "Unable to set thread priority" );
+            static if( __traits( compiles, pthread_setschedprio ) )
+            {
+                if( pthread_setschedprio( m_addr, val ) )
+                    throw new ThreadException( "Unable to set thread priority" );
+            }
+            else
+            {
+                // NOTE: pthread_setschedprio is not implemented on OSX or FreeBSD, so use
+                //       the more complicated get/set sequence below.
+                int         policy;
+                sched_param param;
 
-            int         policy;
-            sched_param param;
-
-            if( pthread_getschedparam( m_addr, &policy, &param ) )
-                throw new ThreadException( "Unable to set thread priority" );
-            param.sched_priority = val;
-            if( pthread_setschedparam( m_addr, policy, &param ) )
-                throw new ThreadException( "Unable to set thread priority" );
+                if( pthread_getschedparam( m_addr, &policy, &param ) )
+                    throw new ThreadException( "Unable to set thread priority" );
+                param.sched_priority = val;
+                if( pthread_setschedparam( m_addr, policy, &param ) )
+                    throw new ThreadException( "Unable to set thread priority" );
+            }
         }
     }
 
+
+    unittest
+    {
+        auto thr = Thread.getThis();
+        immutable prio = thr.priority;
+        scope (exit) thr.priority = prio;
+
+        assert(prio == PRIORITY_DEFAULT);
+        assert(prio >= PRIORITY_MIN && prio <= PRIORITY_MAX);
+        thr.priority = PRIORITY_MIN;
+        assert(thr.priority == PRIORITY_MIN);
+        thr.priority = PRIORITY_MAX;
+        assert(thr.priority == PRIORITY_MAX);
+    }
 
     ///////////////////////////////////////////////////////////////////////////
     // Actions on Calling Thread
@@ -1021,6 +989,10 @@ class Thread
         version( Windows )
         {
             auto maxSleepMillis = dur!("msecs")( uint.max - 1 );
+
+            // avoid a non-zero time to be round down to 0
+            if( val > dur!"msecs"( 0 ) && val < dur!"msecs"( 1 ) )
+                val = dur!"msecs"( 1 );
 
             // NOTE: In instances where all other threads in the process have a
             //       lower priority than the current thread, the current thread
@@ -1065,40 +1037,6 @@ class Thread
 
 
     /**
-     * $(RED Deprecated. It will be removed in December 2012. Please use the
-     *       version which takes a $(D Duration) instead.)
-     *
-     * Suspends the calling thread for at least the supplied period.  This may
-     * result in multiple OS calls if period is greater than the maximum sleep
-     * duration supported by the operating system.
-     *
-     * Params:
-     *  period = The minimum duration the calling thread should be suspended,
-     *           in 100 nanosecond intervals.
-     *
-     * In:
-     *  period must be non-negative.
-     *
-     * Example:
-     * ------------------------------------------------------------------------
-     *
-     * Thread.sleep( 500_000 );    // sleep for 50 milliseconds
-     * Thread.sleep( 50_000_000 ); // sleep for 5 seconds
-     *
-     * ------------------------------------------------------------------------
-     */
-    deprecated static void sleep( long period )
-    in
-    {
-        assert( period >= 0 );
-    }
-    body
-    {
-        sleep( dur!"hnsecs"( period ) );
-    }
-
-
-    /**
      * Forces a context switch to occur away from the calling thread.
      */
     static void yield()
@@ -1114,7 +1052,6 @@ class Thread
     // Thread Accessors
     ///////////////////////////////////////////////////////////////////////////
 
-
     /**
      * Provides a reference to the calling thread.
      *
@@ -1128,29 +1065,18 @@ class Thread
         // NOTE: This function may not be called until thread_init has
         //       completed.  See thread_suspendAll for more information
         //       on why this might occur.
-        version( Windows )
+        version( OSX )
         {
-            auto t = cast(Thread) TlsGetValue( sm_this );
-
-            // NOTE: If this thread was attached via thread_attachByAddr then
-            //       this TLS lookup won't initially be set, so when the TLS
-            //       lookup fails, try an exhaustive search.
-            if( t is null )
-            {
-                t = thread_findByAddr( GetCurrentThreadId() );
-                setThis( t );
-            }
-            return t;
+            return sm_this;
         }
         else version( Posix )
         {
             auto t = cast(Thread) pthread_getspecific( sm_this );
-
-            // NOTE: See the comment near thread_findByAddr() for why the
-            //       secondary thread_findByAddr lookup can't be done on
-            //       Posix.  However, because thread_attachByAddr() is for
-            //       Windows only, the secondary lookup is pointless anyway.
             return t;
+        }
+        else
+        {
+            return sm_this;
         }
     }
 
@@ -1219,8 +1145,9 @@ class Thread
     {
         version( Windows )
         {
-            PRIORITY_MIN = -15;
-            PRIORITY_MAX =  15;
+            PRIORITY_MIN = THREAD_PRIORITY_IDLE;
+            PRIORITY_DEFAULT = THREAD_PRIORITY_NORMAL;
+            PRIORITY_MAX = THREAD_PRIORITY_TIME_CRITICAL;
         }
         else version( Posix )
         {
@@ -1233,6 +1160,8 @@ class Thread
 
             PRIORITY_MIN = sched_get_priority_min( policy );
             assert( PRIORITY_MIN != -1 );
+
+            PRIORITY_DEFAULT = param.sched_priority;
 
             PRIORITY_MAX = sched_get_priority_max( policy );
             assert( PRIORITY_MAX != -1 );
@@ -1254,29 +1183,6 @@ private:
     {
         m_call = Call.NO;
         m_curr = &m_main;
-
-        version (OSX)
-        {
-            //printf("test2 %p %p\n", _tls_data_array[0].ptr, &_tls_data_array[1][length]);
-            //printf("test2 %p %p\n", &_tls_beg, &_tls_end);
-            // NOTE: OSX does not support TLS, so we do it ourselves.  The TLS
-            //       data output by the compiler is bracketed by _tls_data_array2],
-            //       so make a copy of it for each thread.
-            const sz0 = (_tls_data_array[0].length + 15) & ~cast(size_t)15;
-            const sz2 = sz0 + _tls_data_array[1].length;
-            auto p = malloc( sz2 );
-            assert( p );
-            m_tls = p[0 .. sz2];
-            memcpy( p, _tls_data_array[0].ptr, _tls_data_array[0].length );
-            memcpy( p + sz0, _tls_data_array[1].ptr, _tls_data_array[1].length );
-            // The free must happen at program end, if anywhere.
-        }
-        else
-        {
-            auto pstart = cast(void*) &_tlsstart;
-            auto pend   = cast(void*) &_tlsend;
-            m_tls = pstart[0 .. pend - pstart];
-        }
     }
 
 
@@ -1330,7 +1236,22 @@ private:
     //
     // Local storage
     //
-    __gshared TLSKey    sm_this;
+    version( OSX )
+    {
+        static Thread       sm_this;
+    }
+    else version( Posix )
+    {
+        // On Posix (excluding OSX), pthread_key_t is explicitly used to
+        // store and access thread reference. This is needed
+        // to avoid TLS access in signal handlers (malloc deadlock)
+        // when using shared libraries, see issue 11981.
+        __gshared pthread_key_t sm_this;
+    }
+    else
+    {
+        static Thread       sm_this;
+    }
 
 
     //
@@ -1379,13 +1300,17 @@ private:
     //
     static void setThis( Thread t )
     {
-        version( Windows )
+        version( OSX )
         {
-            TlsSetValue( sm_this, cast(void*) t );
+            sm_this = t;
         }
         else version( Posix )
-        {
+        { 
             pthread_setspecific( sm_this, cast(void*) t );
+        }
+        else
+        {
+            sm_this = t;
         }
     }
 
@@ -1445,7 +1370,6 @@ private:
     Context             m_main;
     Context*            m_curr;
     bool                m_lock;
-    void[]              m_tls;  // spans implicit thread local storage
     rt.tlsgc.Data*      m_tlsgcdata;
 
     version( Windows )
@@ -1523,21 +1447,30 @@ private:
     //
     @property static Mutex slock()
     {
-        __gshared Mutex m = null;
+        return cast(Mutex)_locks[0].ptr;
+    }
 
-        if( m !is null )
-            return m;
-        else
+    @property static Mutex criticalRegionLock()
+    {
+        return cast(Mutex)_locks[1].ptr;
+    }
+
+    __gshared byte[__traits(classInstanceSize, Mutex)][2] _locks;
+
+    static void initLocks()
+    {
+        foreach (ref lock; _locks)
         {
-            auto ci = Mutex.classinfo;
-            auto p  = malloc( ci.init.length );
-            (cast(byte*) p)[0 .. ci.init.length] = ci.init[];
-            m = cast(Mutex) p;
-            m.__ctor();
-            return m;
+            lock[] = typeid(Mutex).init[];
+            (cast(Mutex)lock.ptr).__ctor();
         }
     }
 
+    static void termLocks()
+    {
+        foreach (ref lock; _locks)
+            (cast(Mutex)lock.ptr).__dtor();
+    }
 
     __gshared Context*  sm_cbeg;
     __gshared size_t    sm_clen;
@@ -1734,13 +1667,13 @@ private:
 version (D_LP64)
 {
     version (Windows)
-        static assert(__traits(classInstanceSize, Thread) == 312);
+        static assert(__traits(classInstanceSize, Thread) == 296);
     else version (OSX)
-        static assert(__traits(classInstanceSize, Thread) == 320);
+        static assert(__traits(classInstanceSize, Thread) == 304);
     else version (Solaris)
-        static assert(__traits(classInstanceSize, Thread) == 176);
+        static assert(__traits(classInstanceSize, Thread) == 160);
     else version (Posix)
-        static assert(__traits(classInstanceSize, Thread) == 184);
+        static assert(__traits(classInstanceSize, Thread) == 168);
     else
             static assert(0, "Platform not supported.");
 }
@@ -1749,11 +1682,11 @@ else
     static assert((void*).sizeof == 4); // 32-bit
 
     version (Windows)
-        static assert(__traits(classInstanceSize, Thread) == 128);
+        static assert(__traits(classInstanceSize, Thread) == 120);
     else version (OSX)
-        static assert(__traits(classInstanceSize, Thread) == 128);
+        static assert(__traits(classInstanceSize, Thread) == 120);
     else version (Posix)
-        static assert(__traits(classInstanceSize, Thread) ==  92);
+        static assert(__traits(classInstanceSize, Thread) ==  84);
     else
         static assert(0, "Platform not supported.");
 }
@@ -1811,17 +1744,10 @@ extern (C) void thread_init()
     //       exist to be scanned at this point, it is sufficient for these
     //       functions to detect the condition and return immediately.
 
-    version( Windows )
-    {
-        Thread.sm_this = TlsAlloc();
-        assert( Thread.sm_this != TLS_OUT_OF_INDEXES );
-    }
-    else version( OSX )
-    {
-        int status;
+    Thread.initLocks();
 
-        status = pthread_key_create( &Thread.sm_this, null );
-        assert( status == 0 );
+    version( OSX )
+    {
     }
     else version( Posix )
     {
@@ -1874,6 +1800,24 @@ extern (C) void thread_init()
 
 
 /**
+ * Terminates the thread module. No other thread routine may be called
+ * afterwards.
+ */
+extern (C) void thread_term()
+{
+    Thread.termLocks();
+
+    version( OSX )
+    {
+    }
+    else version( Posix )
+    {
+        pthread_key_delete( Thread.sm_this );
+    }
+}
+
+
+/**
  *
  */
 extern (C) bool thread_isMainThread()
@@ -1913,6 +1857,7 @@ extern (C) Thread thread_attachThis()
         thisThread.m_isRunning = true;
     }
     thisThread.m_isDaemon = true;
+    thisThread.m_tlsgcdata = rt.tlsgc.init();
     Thread.setThis( thisThread );
 
     version( OSX )
@@ -1921,34 +1866,10 @@ extern (C) Thread thread_attachThis()
         assert( thisThread.m_tmach != thisThread.m_tmach.init );
     }
 
-    version (OSX)
-    {
-        //printf("test3 %p %p\n", _tls_data_array[0].ptr, &_tls_data_array[1][length]);
-        //printf("test3 %p %p\n", &_tls_beg, &_tls_end);
-        // NOTE: OSX does not support TLS, so we do it ourselves.  The TLS
-        //       data output by the compiler is bracketed by _tls_data_array[2],
-        //       so make a copy of it for each thread.
-        const sz0 = (_tls_data_array[0].length + 15) & ~cast(size_t)15;
-        const sz2 = sz0 + _tls_data_array[1].length;
-        auto p = gc_malloc( sz2 );
-        assert( p );
-        thisThread.m_tls = p[0 .. sz2];
-        memcpy( p, _tls_data_array[0].ptr, _tls_data_array[0].length );
-        memcpy( p + sz0, _tls_data_array[1].ptr, _tls_data_array[1].length );
-        // used gc_malloc so no need to free
-    }
-    else
-    {
-        auto pstart = cast(void*) &_tlsstart;
-        auto pend   = cast(void*) &_tlsend;
-        thisThread.m_tls = pstart[0 .. pend - pstart];
-    }
-
     Thread.add( thisThread );
     Thread.add( thisContext );
     if( Thread.sm_main !is null )
         multiThreadedFlag = true;
-    thisThread.m_tlsgcdata = rt.tlsgc.init();
     return thisThread;
 }
 
@@ -1988,44 +1909,28 @@ version( Windows )
         thisContext.bstack = bstack;
         thisContext.tstack = thisContext.bstack;
 
-        if( addr == GetCurrentThreadId() )
-        {
-            thisThread.m_hndl = GetCurrentThreadHandle();
-        }
-        else
-        {
-            thisThread.m_hndl = OpenThreadHandle( addr );
-        }
-
         thisThread.m_isDaemon = true;
 
         if( addr == GetCurrentThreadId() )
         {
-            auto pstart = cast(void*) &_tlsstart;
-            auto pend   = cast(void*) &_tlsend;
-            thisThread.m_tls = pstart[0 .. pend - pstart];
+            thisThread.m_hndl = GetCurrentThreadHandle();
+            thisThread.m_tlsgcdata = rt.tlsgc.init();
             Thread.setThis( thisThread );
         }
         else
         {
-            // TODO: This seems wrong.  If we're binding threads from
-            //       a DLL, will they always have space reserved for
-            //       the TLS chunk we expect?  I don't know Windows
-            //       well enough to say.
-            auto pstart = cast(void*) &_tlsstart;
-            auto pend   = cast(void*) &_tlsend;
-            auto pos    = GetTlsDataAddress( thisThread.m_hndl );
-            if( pos ) // on x64, threads without TLS happen to exist
-                thisThread.m_tls = pos[0 .. pend - pstart];
-            else
-                thisThread.m_tls = [];
+            thisThread.m_hndl = OpenThreadHandle( addr );
+            impersonate_thread(addr,
+            {
+                thisThread.m_tlsgcdata = rt.tlsgc.init();
+                Thread.setThis( thisThread );
+            });
         }
 
         Thread.add( thisThread );
         Thread.add( thisContext );
         if( Thread.sm_main !is null )
             multiThreadedFlag = true;
-        thisThread.m_tlsgcdata = rt.tlsgc.init();
         return thisThread;
     }
 }
@@ -2140,101 +2045,94 @@ shared static ~this()
 // Used for needLock below.
 private __gshared bool multiThreadedFlag = false;
 
+version (PPC64) version = ExternStackShell;
 
-// Calls the given delegate, passing the current thread's stack pointer to it.
-private void callWithStackShell(scope void delegate(void* sp) fn)
-in
+version (ExternStackShell)
 {
-    assert(fn);
+    extern(D) public void callWithStackShell(scope void delegate(void* sp) fn);
 }
-body
+else
 {
-    // The purpose of the 'shell' is to ensure all the registers
-    // get put on the stack so they'll be scanned
-    void *sp;
+    // Calls the given delegate, passing the current thread's stack pointer to it.
+    private void callWithStackShell(scope void delegate(void* sp) fn)
+    in
+    {
+        assert(fn);
+    }
+    body
+    {
+        // The purpose of the 'shell' is to ensure all the registers get
+        // put on the stack so they'll be scanned. We only need to push
+        // the callee-save registers.
+        void *sp = void;
 
-    version (GNU)
-    {
-        __builtin_unwind_init();
-        sp = & sp;
-    }
-    else version (D_InlineAsm_X86)
-    {
-        asm
+        version (GNU)
         {
-            pushad              ;
-            mov sp[EBP],ESP     ;
+            __builtin_unwind_init();
+            sp = &sp;
         }
-    }
-    else version (D_InlineAsm_X86_64)
-    {
-        asm
+        else version (AsmX86_Posix)
         {
-            push RAX ;
-            push RBX ;
-            push RCX ;
-            push RDX ;
-            push RSI ;
-            push RDI ;
-            push RBP ;
-            push R8  ;
-            push R9  ;
-            push R10  ;
-            push R11  ;
-            push R12  ;
-            push R13  ;
-            push R14  ;
-            push R15  ;
-            push RAX ;   // 16 byte align the stack
-            mov sp[RBP],RSP     ;
-        }
-    }
-    else
-    {
-        static assert(false, "Architecture not supported.");
-    }
+            size_t[3] regs = void;
+            asm
+            {
+                mov [regs + 0 * 4], EBX;
+                mov [regs + 1 * 4], ESI;
+                mov [regs + 2 * 4], EDI;
 
-    fn(sp);
+                mov sp[EBP], ESP;
+            }
+        }
+        else version (AsmX86_Windows)
+        {
+            size_t[3] regs = void;
+            asm
+            {
+                mov [regs + 0 * 4], EBX;
+                mov [regs + 1 * 4], ESI;
+                mov [regs + 2 * 4], EDI;
 
-    version (GNU)
-    {
-        // registers will be popped automatically
-    }
-    else version (D_InlineAsm_X86)
-    {
-        asm
-        {
-            popad;
+                mov sp[EBP], ESP;
+            }
         }
-    }
-    else version (D_InlineAsm_X86_64)
-    {
-        asm
+        else version (AsmX86_64_Posix)
         {
-            pop RAX ;   // 16 byte align the stack
-            pop R15  ;
-            pop R14  ;
-            pop R13  ;
-            pop R12  ;
-            pop R11  ;
-            pop R10  ;
-            pop R9  ;
-            pop R8  ;
-            pop RBP ;
-            pop RDI ;
-            pop RSI ;
-            pop RDX ;
-            pop RCX ;
-            pop RBX ;
-            pop RAX ;
+            size_t[5] regs = void;
+            asm
+            {
+                mov [regs + 0 * 8], RBX;
+                mov [regs + 1 * 8], R12;
+                mov [regs + 2 * 8], R13;
+                mov [regs + 3 * 8], R14;
+                mov [regs + 4 * 8], R15;
+
+                mov sp[RBP], RSP;
+            }
         }
-    }
-    else
-    {
-        static assert(false, "Architecture not supported.");
+        else version (AsmX86_64_Windows)
+        {
+            size_t[7] regs = void;
+            asm
+            {
+                mov [regs + 0 * 8], RBX;
+                mov [regs + 1 * 8], RSI;
+                mov [regs + 2 * 8], RDI;
+                mov [regs + 3 * 8], R12;
+                mov [regs + 4 * 8], R13;
+                mov [regs + 5 * 8], R14;
+                mov [regs + 6 * 8], R15;
+
+                mov sp[RBP], RSP;
+            }
+        }
+        else
+        {
+            static assert(false, "Architecture not supported.");
+        }
+
+        fn(sp);
     }
 }
-
 
 // Used for suspendAll/resumeAll below.
 private __gshared uint suspendDepth = 0;
@@ -2391,17 +2289,12 @@ private void suspend( Thread t )
                 }
                 throw new ThreadException( "Unable to suspend thread" );
             }
-            // NOTE: It's really not ideal to wait for each thread to
-            //       signal individually -- rather, it would be better to
-            //       suspend them all and wait once at the end.  However,
-            //       semaphores don't really work this way, and the obvious
-            //       alternative (looping on an atomic suspend count)
-            //       requires either the atomic module (which only works on
-            //       x86) or other specialized functionality.  It would
-            //       also be possible to simply loop on sem_wait at the
-            //       end, but I'm not convinced that this would be much
-            //       faster than the current approach.
-            sem_wait( &suspendCount );
+            while (sem_wait(&suspendCount) != 0)
+            {
+                if (errno != EINTR)
+                    throw new ThreadException( "Unable to wait for semaphore" );
+                errno = 0;
+            }
         }
         else if( !t.m_lock )
         {
@@ -2454,61 +2347,30 @@ extern (C) void thread_suspendAll()
         //       the same thread to be suspended twice, which would likely
         //       cause the second suspend to fail, the garbage collection to
         //       abort, and Bad Things to occur.
-        for( Thread t = Thread.sm_tbeg; t; t = t.next )
-        {
-            if( t.isRunning )
-                suspend( t );
-            else
-                Thread.remove( t );
-        }
 
-        // The world is stopped. We now make sure that all threads are outside
-        // critical regions by continually suspending and resuming them until all
-        // of them are safe. This is extremely error-prone; if some thread enters
-        // a critical region and never exits it (e.g. it waits for a mutex forever),
-        // then we'll pretty much 'deadlock' here. Not much we can do about that,
-        // and it indicates incorrect use of the critical region API anyway.
-        for (;;)
+        Thread.criticalRegionLock.lock();
+        for (Thread t = Thread.sm_tbeg; t !is null; t = t.next)
         {
-            uint unsafeCount;
-
-            for (auto t = Thread.sm_tbeg; t; t = t.next)
+            Duration waittime = dur!"usecs"(10);
+        Lagain:
+            if (!t.isRunning)
             {
-                // NOTE: We don't need to check whether the thread has died here,
-                //       since it's checked in the loops above and below.
-                if (atomicLoad(*cast(shared)&t.m_isInCriticalRegion))
-                {
-                    unsafeCount += 10;
-                    resume(t);
-                }
+                Thread.remove(t);
             }
-
-            // If all threads are safe (i.e. unsafeCount == 0), no threads were in
-            // critical regions in the first place, and we can just break. Otherwise,
-            // we sleep for a bit to give the threads a chance to get to safe points.
-            if (unsafeCount)
-                Thread.sleep(dur!"usecs"(unsafeCount)); // This heuristic could probably use some tuning.
-            else
-                break;
-
-            // Some thread was not in a safe region, so we suspend the world again to
-            // re-do this loop to check whether we're safe now.
-            for (auto t = Thread.sm_tbeg; t; t = t.next)
+            else if (t.m_isInCriticalRegion)
             {
-                // The thread could have died in the meantime. Also see the note in
-                // the topmost loop that initially suspends the world.
-                if (t.isRunning)
-                    suspend(t);
-                else
-                    Thread.remove(t);
+                Thread.criticalRegionLock.unlock();
+                Thread.sleep(waittime);
+                if (waittime < dur!"msecs"(10)) waittime *= 2;
+                Thread.criticalRegionLock.lock();
+                goto Lagain;
+            }
+            else
+            {
+                suspend(t);
             }
         }
-
-        version( Posix )
-        {
-            // wait on semaphore -- see note in suspend for
-            // why this is currently not implemented
-        }
+        Thread.criticalRegionLock.unlock();
     }
 }
 
@@ -2688,8 +2550,6 @@ private void scanAllTypeImpl( scope ScanAllThreadsTypeFn scan, void* curStackTop
 
     for( Thread t = Thread.sm_tbeg; t; t = t.next )
     {
-        scan( ScanType.tls, t.m_tls.ptr, t.m_tls.ptr + t.m_tls.length );
-
         version( Windows )
         {
             // Ideally, we'd pass ScanType.regs or something like that, but this
@@ -2697,7 +2557,8 @@ private void scanAllTypeImpl( scope ScanAllThreadsTypeFn scan, void* curStackTop
             scan( ScanType.stack, t.m_reg.ptr, t.m_reg.ptr + t.m_reg.length );
         }
 
-        rt.tlsgc.scan(t.m_tlsgcdata, (p1, p2) => scan(ScanType.tls, p1, p2));
+        if (t.m_tlsgcdata !is null)
+            rt.tlsgc.scan(t.m_tlsgcdata, (p1, p2) => scan(ScanType.tls, p1, p2));
     }
 }
 
@@ -2714,7 +2575,8 @@ in
 }
 body
 {
-    atomicStore(*cast(shared)&Thread.getThis().m_isInCriticalRegion, true);
+    synchronized (Thread.criticalRegionLock)
+        Thread.getThis().m_isInCriticalRegion = true;
 }
 
 extern (C) void thread_exitCriticalRegion()
@@ -2724,7 +2586,8 @@ in
 }
 body
 {
-    atomicStore(*cast(shared)&Thread.getThis().m_isInCriticalRegion, false);
+    synchronized (Thread.criticalRegionLock)
+        Thread.getThis().m_isInCriticalRegion = false;
 }
 
 extern (C) bool thread_inCriticalRegion()
@@ -2734,7 +2597,8 @@ in
 }
 body
 {
-    return atomicLoad(*cast(shared)&Thread.getThis().m_isInCriticalRegion);
+    synchronized (Thread.criticalRegionLock)
+        return Thread.getThis().m_isInCriticalRegion;
 }
 
 unittest
@@ -2762,55 +2626,71 @@ unittest
     //       to cause a deadlock.
     // NOTE: DO NOT USE LOCKS IN CRITICAL REGIONS IN NORMAL CODE.
 
-    import core.sync.condition;
+    import core.sync.semaphore;
 
-    bool critical;
-    auto cond1 = new Condition(new Mutex());
+    auto sema = new Semaphore(),
+         semb = new Semaphore();
 
-    bool stop;
-    auto cond2 = new Condition(new Mutex());
-
-    auto thr = new Thread(delegate void()
+    auto thr = new Thread(
     {
         thread_enterCriticalRegion();
-
         assert(thread_inCriticalRegion());
-        assert(atomicLoad(*cast(shared)&Thread.getThis().m_isInCriticalRegion));
+        sema.notify();
 
-        synchronized (cond1.mutex)
-        {
-            critical = true;
-            cond1.notify();
-        }
-
-        synchronized (cond2.mutex)
-            while (!stop)
-                cond2.wait();
-
+        semb.wait();
         assert(thread_inCriticalRegion());
-        assert(atomicLoad(*cast(shared)&Thread.getThis().m_isInCriticalRegion));
 
         thread_exitCriticalRegion();
-
         assert(!thread_inCriticalRegion());
-        assert(!atomicLoad(*cast(shared)&Thread.getThis().m_isInCriticalRegion));
+        sema.notify();
+
+        semb.wait();
+        assert(!thread_inCriticalRegion());
     });
 
     thr.start();
 
-    synchronized (cond1.mutex)
-        while (!critical)
-            cond1.wait();
+    sema.wait();
+    synchronized (Thread.criticalRegionLock)
+        assert(thr.m_isInCriticalRegion);
+    semb.notify();
 
-    assert(atomicLoad(*cast(shared)&thr.m_isInCriticalRegion));
-
-    synchronized (cond2.mutex)
-    {
-        stop = true;
-        cond2.notify();
-    }
+    sema.wait();
+    synchronized (Thread.criticalRegionLock)
+        assert(!thr.m_isInCriticalRegion);
+    semb.notify();
 
     thr.join();
+}
+
+unittest
+{
+    import core.sync.semaphore;
+
+    shared bool inCriticalRegion;
+    auto sema = new Semaphore(),
+         semb = new Semaphore();
+
+    auto thr = new Thread(
+    {
+        thread_enterCriticalRegion();
+        inCriticalRegion = true;
+        sema.notify();
+        semb.wait();
+
+        Thread.sleep(dur!"msecs"(1));
+        inCriticalRegion = false;
+        thread_exitCriticalRegion();
+    });
+    thr.start();
+
+    sema.wait();
+    assert(inCriticalRegion);
+    semb.notify();
+
+    thread_suspendAll();
+    assert(!inCriticalRegion);
+    thread_resumeAll();
 }
 
 /**
@@ -3135,9 +3015,34 @@ private
     else version( PPC )
     {
         version( Posix )
+        {
             version = AsmPPC_Posix;
+            version = AsmExternal;
+        }
     }
-
+    else version( PPC64 )
+    {
+        version( Posix )
+        {
+            version = AlignFiberStackTo16Byte;
+        }
+    }
+    else version( MIPS_O32 )
+    {
+        version( Posix )
+        {
+            version = AsmMIPS_O32_Posix;
+            version = AsmExternal;
+        }
+    }
+    else version( ARM )
+    {
+        version( Posix )
+        {
+            version = AsmARM_Posix;
+            version = AsmExternal;
+        }
+    }
 
     version( Posix )
     {
@@ -3147,7 +3052,7 @@ private
         version( AsmX86_Posix )      {} else
         version( AsmX86_64_Windows ) {} else
         version( AsmX86_64_Posix )   {} else
-        version( AsmPPC_Posix )      {} else
+        version( AsmExternal )       {} else
         {
             // NOTE: The ucontext implementation requires architecture specific
             //       data definitions to operate so testing for it must be done
@@ -3222,10 +3127,8 @@ private
         obj.switchOut();
     }
 
-
-  // NOTE: If AsmPPC_Posix is defined then the context switch routine will
-  //       be defined externally until inline PPC ASM is supported.
-  version( AsmPPC_Posix )
+  // Look above the definition of 'class Fiber' for some information about the implementation of this routine
+  version( AsmExternal )
     extern (C) void fiber_switchContext( void** oldp, void* newp );
   else
     extern (C) void fiber_switchContext( void** oldp, void* newp )
@@ -3268,7 +3171,8 @@ private
                 pop EBP;
 
                 // 'return' to complete switch
-                ret;
+                pop ECX;
+                jmp ECX;
             }
         }
         else version( AsmX86_64_Windows )
@@ -3385,6 +3289,8 @@ private
             swapcontext( **(cast(ucontext_t***) oldp),
                           *(cast(ucontext_t**)  newp) );
         }
+        else
+            static assert(0, "Not implemented");
     }
 }
 
@@ -3392,7 +3298,128 @@ private
 ///////////////////////////////////////////////////////////////////////////////
 // Fiber
 ///////////////////////////////////////////////////////////////////////////////
-
+/*
+ * Documentation of Fiber internals:
+ *
+ * The main routines to implement when porting Fibers to new architectures are
+ * fiber_switchContext and initStack. Some version constants have to be defined
+ * for the new platform as well, search for "Fiber Platform Detection and Memory Allocation".
+ * These must be kept in sync with thread.di as well! You might also want to verify
+ * the Fiber size for the new platform in thread.d and thread.di. Search for
+ * "enum FiberSize"
+ *
+ * Fibers are based on a concept called 'Context'. A Context describes the execution
+ * state of a Fiber or main thread which is fully described by the stack, some
+ * registers and a return address at which the Fiber/Thread should continue executing.
+ * Please note that not only each Fiber has a Context, but each thread also has got a
+ * Context which describes the threads stack and state. If you call Fiber fib; fib.call
+ * the first time in a thread you switch from Threads Context into the Fibers Context.
+ * If you call fib.yield in that Fiber you switch out of the Fibers context and back
+ * into the Thread Context. (However, this is not always the case. You can call a Fiber
+ * from within another Fiber, then you switch Contexts between the Fibers and the Thread
+ * Context is not involved)
+ *
+ * In all current implementations the registers and the return address are actually
+ * saved on a Contexts stack.
+ *
+ * The fiber_switchContext routine has got two parameters:
+ * void** a:  This is the _location_ where we have to store the current stack pointer,
+ *            the stack pointer of the currently executing Context (Fiber or Thread).
+ * void*  b:  This is the pointer to the stack of the Context which we want to switch into.
+ *            Note that we get the same pointer here as the one we stored into the void** a
+ *            in a previous call to fiber_switchContext.
+ *
+ * In the simplest case, a fiber_switchContext rountine looks like this:
+ * fiber_switchContext:
+ *     push {return Address}
+ *     push {registers}
+ *     copy {stack pointer} into {location pointed to by a}
+ *     //We have now switch to the stack of a different Context!
+ *     copy {b} into {stack pointer}
+ *     pop {registers}
+ *     pop {return Address}
+ *     jump to {return Address}
+ *
+ * The GC uses the value returned in parameter a to scan the Fibers stack. It scans from
+ * the stack base to that value. As the GC dislikes false pointers we can actually optimize
+ * this a little: By storing registers which can not contain references to memory managed
+ * by the GC outside of the region marked by the stack base pointer and the stack pointer
+ * saved in fiber_switchContext we can prevent the GC from scanning them.
+ * Such registers are usually floating point registers and the return address. In order to
+ * implement this, we return a modified stack pointer from fiber_switchContext. However,
+ * we have to remember that when we restore the registers from the stack!
+ * 
+ * --------------------------- <= Stack Base
+ * |          Frame          | <= Many other stack frames
+ * |          Frame          |
+ * |-------------------------| <= The last stack frame. This one is created by fiber_switchContext
+ * | registers with pointers |
+ * |                         | <= Stack pointer. GC stops scanning here
+ * |   return address        |
+ * |floating point registers |
+ * --------------------------- <= Real Stack End
+ *
+ * fiber_switchContext:
+ *     push {registers with pointers}
+ *     copy {stack pointer} into {location pointed to by a}
+ *     push {return Address}
+ *     push {Floating point registers}
+ *     //We have now switch to the stack of a different Context!
+ *     copy {b} into {stack pointer}
+ *     //We now have to adjust the stack pointer to point to 'Real Stack End' so we can pop
+ *     //the FP registers
+ *     //+ or - depends on if your stack grows downwards or upwards
+ *     {stack pointer} = {stack pointer} +- ({FPRegisters}.sizeof + {return address}.sizeof}
+ *     pop {Floating point registers}
+ *     pop {return Address}
+ *     pop {registers with pointers}
+ *     jump to {return Address}
+ *
+ * So the question now is which registers need to be saved? This depends on the specific
+ * architecture ABI of course, but here are some general guidelines:
+ * - If a register is callee-save (if the callee modifies the register it must saved and
+ *   restored by the callee) it needs to be saved/restored in switchContext
+ * - If a register is caller-save it needn't be saved/restored. (Calling fiber_switchContext
+ *   is a function call and the compiler therefore already must save these registers before
+ *   calling fiber_switchContext)
+ * - Argument registers used for passing parameters to functions needn't be saved/restored
+ * - The return register needn't be saved/restored (fiber_switchContext hasn't got a return type)
+ * - All scratch registers needn't be saved/restored
+ * - The link register usually needn't be saved/restored (but sometimes it must be cleared -
+ *   see below for details)
+ * - The frame pointer register - if it exists - is usually callee-save
+ * - All current implementations do not save control registers
+ *
+ * What happens on the first switch into a Fiber? We never saved a state for this fiber before,
+ * but the initial state is prepared in the initStack routine. (This routine will also be called
+ * when a Fiber is being resetted). initStack must produce exactly the same stack layout as the
+ * part of fiber_switchContext which saves the registers. Pay special attention to set the stack
+ * pointer correctly if you use the GC optimization mentioned before. the return Address saved in
+ * initStack must be the address of fiber_entrypoint.
+ *
+ * There's now a small but important difference between the first context switch into a fiber and
+ * further context switches. On the first switch, Fiber.call is used and the returnAddress in
+ * fiber_switchContext will point to fiber_entrypoint. The important thing here is that this jump
+ * is a _function call_, we call fiber_entrypoint by jumping before it's function prologue. On later
+ * calls, the user used yield() in a function, and therefore the return address points into a user
+ * function, after the yield call. So here the jump in fiber_switchContext is a _function return_,
+ * not a function call!
+ *
+ * The most important result of this is that on entering a function, i.e. fiber_entrypoint, we
+ * would have to provide a return address / set the link register once fiber_entrypoint
+ * returns. Now fiber_entrypoint does never return and therefore the actual value of the return
+ * address / link register is never read/used and therefore doesn't matter. When fiber_switchContext
+ * performs a _function return_ the value in the link register doesn't matter either.
+ * However, the link register will still be saved to the stack in fiber_entrypoint and some
+ * exception handling / stack unwinding code might read it from this stack location and crash.
+ * The exact solution depends on your architecture, but see the ARM implementation for a way
+ * to deal with this issue.
+ *
+ * The ARM implementation is meant to be used as a kind of documented example implementation.
+ * Look there for a concrete example.
+ * 
+ * FIXME: fiber_entrypoint might benefit from a @noreturn attribute, but D doesn't have one.
+ */
 
 /**
  * This class provides a cooperative concurrency mechanism integrated with the
@@ -3405,6 +3432,18 @@ private
  * may be freely passed between threads so long as they are not currently
  * executing.  Like threads, a new fiber thread may be created using either
  * derivation or composition, as in the following example.
+ *
+ * Warning:
+ * Status registers are not saved by the current implementations. This means
+ * floating point exception status bits (overflow, divide by 0), rounding mode
+ * and similar stuff is set per-thread, not per Fiber!
+ *
+ * Warning:
+ * On ARM FPU registers are not saved if druntime was compiled as ARM_SoftFloat.
+ * If such a build is used on a ARM_SoftFP system which actually has got a FPU
+ * and other libraries are using the FPU registers (other code is compiled
+ * as ARM_SoftFP) this can cause problems. Druntime must be compiled as
+ * ARM_SoftFP in this case.
  *
  * Example:
  * ----------------------------------------------------------------------
@@ -3589,15 +3628,12 @@ class Fiber
 
 
     /**
-     * Resets this fiber so that it may be re-used.  This routine may only be
-     * called for fibers that have terminated, as doing otherwise could result
-     * in scope-dependent functionality that is not executed.  Stack-based
-     * classes, for example, may not be cleaned up properly if a fiber is reset
-     * before it has terminated.
-     *
-     * Params:
-     *  fn = The fiber function.
-     *  dg = The fiber function.
+     * Resets this fiber so that it may be re-used, optionally with a
+     * new function/delegate.  This routine may only be called for
+     * fibers that have terminated, as doing otherwise could result in
+     * scope-dependent functionality that is not executed.
+     * Stack-based classes, for example, may not be cleaned up
+     * properly if a fiber is reset before it has terminated.
      *
      * In:
      *  This fiber must be in state TERM.
@@ -3891,6 +3927,7 @@ private:
         else
         {
             version (Posix) import core.sys.posix.sys.mman; // mmap
+            version (linux) import core.sys.linux.sys.mman : MAP_ANON;
 
             static if( __traits( compiles, mmap ) )
             {
@@ -3980,6 +4017,7 @@ private:
 
     //
     // Initialize the allocated stack.
+    // Look above the definition of 'class Fiber' for some information about the implementation of this routine
     //
     final void initStack()
     in
@@ -4160,6 +4198,79 @@ private:
 
             assert( (cast(size_t) pstack & 0x0f) == 0 );
         }
+        else version( AsmMIPS_O32_Posix )
+        {
+            version (StackGrowsDown) {}
+            else static assert(0);
+
+            /* We keep the FP registers and the return address below
+             * the stack pointer, so they don't get scanned by the
+             * GC. The last frame before swapping the stack pointer is
+             * organized like the following.
+             *
+             *     |-----------|<= frame pointer
+             *     |    $gp    |
+             *     |   $s0-8   |
+             *     |-----------|<= stack pointer
+             *     |    $ra    |
+             *     |  align(8) |
+             *     |  $f20-30  |
+             *     |-----------|
+             *
+             */
+            enum SZ_GP = 10 * size_t.sizeof; // $gp + $s0-8
+            enum SZ_RA = size_t.sizeof;      // $ra
+            version (MIPS_HardFloat)
+            {
+                enum SZ_FP = 6 * 8;          // $f20-30
+                enum ALIGN = -(SZ_FP + SZ_RA) & (8 - 1);
+            }
+            else
+            {
+                enum SZ_FP = 0;
+                enum ALIGN = 0;
+            }
+
+            enum BELOW = SZ_FP + ALIGN + SZ_RA;
+            enum ABOVE = SZ_GP;
+            enum SZ = BELOW + ABOVE;
+
+            (cast(ubyte*)pstack - SZ)[0 .. SZ] = 0;
+            pstack -= ABOVE;
+            *cast(size_t*)(pstack - SZ_RA) = cast(size_t)&fiber_entryPoint;
+        }
+        else version( AsmARM_Posix )
+        {
+            /* We keep the FP registers and the return address below
+             * the stack pointer, so they don't get scanned by the
+             * GC. The last frame before swapping the stack pointer is
+             * organized like the following.
+             *
+             *   |  |-----------|<= 'frame starts here'
+             *   |  |     fp    | (the actual frame pointer, r11 isn't
+             *   |  |   r10-r4  |  updated and still points to the previous frame)
+             *   |  |-----------|<= stack pointer
+             *   |  |     lr    |
+             *   |  | 4byte pad |
+             *   |  |   d15-d8  |(if FP supported)
+             *   |  |-----------|
+             *   Y
+             *   stack grows down: The pointer value here is smaller than some lines above
+             */
+            // frame pointer can be zero, r10-r4 also zero initialized
+            version( StackGrowsDown )
+                pstack -= int.sizeof * 8;
+            else
+                static assert(false, "Only full descending stacks supported on ARM");
+
+            // link register
+            push( cast(size_t) &fiber_entryPoint );
+            /*
+             * We do not push padding and d15-d8 as those are zero initialized anyway
+             * Position the stack pointer above the lr register
+             */
+            pstack += int.sizeof * 1;
+        }
         else static if( __traits( compiles, ucontext_t ) )
         {
             getcontext( &m_utxt );
@@ -4170,6 +4281,8 @@ private:
             //       be a pointer to the ucontext_t struct for that fiber.
             push( cast(size_t) &m_utxt );
         }
+        else
+            static assert(0, "Not implemented");
     }
 
 
@@ -4288,7 +4401,12 @@ version (D_LP64)
     else version (OSX)
         static assert(__traits(classInstanceSize, Fiber) == 88);
     else version (Posix)
-        static assert(__traits(classInstanceSize, Fiber) == 88);
+    {
+        static if( __traits( compiles, ucontext_t ) )
+            static assert(__traits(classInstanceSize, Fiber) == 88 + ucontext_t.sizeof + 8);
+        else
+            static assert(__traits(classInstanceSize, Fiber) == 88);
+    }
     else
         static assert(0, "Platform not supported.");
 }
@@ -4301,7 +4419,20 @@ else
     else version (OSX)
         static assert(__traits(classInstanceSize, Fiber) == 44);
     else version (Posix)
-        static assert(__traits(classInstanceSize, Fiber) == 44);
+    {
+        static if( __traits( compiles, ucontext_t ) )
+        {
+            // ucontext_t might have an alignment larger than 4.
+            static roundUp()(size_t n)
+            {
+                return (n + (ucontext_t.alignof - 1)) & ~(ucontext_t.alignof - 1);
+            }
+            static assert(__traits(classInstanceSize, Fiber) ==
+                roundUp(roundUp(44) + ucontext_t.sizeof + 4));
+        }
+        else
+            static assert(__traits(classInstanceSize, Fiber) == 44);
+    }
     else
         static assert(0, "Platform not supported.");
 }
@@ -4515,6 +4646,86 @@ unittest
     expect(fib, "delegate");
 }
 
+
+// stress testing GC stack scanning
+unittest
+{
+    import core.memory;
+
+    static void unreferencedThreadObject()
+    {
+        static void sleep() { Thread.sleep(dur!"msecs"(100)); }
+        auto thread = new Thread(&sleep);
+        thread.start();
+    }
+    unreferencedThreadObject();
+    GC.collect();
+
+    static class Foo
+    {
+        this(int value)
+        {
+            _value = value;
+        }
+
+        int bar()
+        {
+            return _value;
+        }
+
+        int _value;
+    }
+
+    static void collect()
+    {
+        auto foo = new Foo(2);
+        assert(foo.bar() == 2);
+        GC.collect();
+        Fiber.yield();
+        GC.collect();
+        assert(foo.bar() == 2);
+    }
+
+    auto fiber = new Fiber(&collect);
+
+    fiber.call();
+    GC.collect();
+    fiber.call();
+
+    // thread reference
+    auto foo = new Foo(2);
+
+    void collect2()
+    {
+        assert(foo.bar() == 2);
+        GC.collect();
+        Fiber.yield();
+        GC.collect();
+        assert(foo.bar() == 2);
+    }
+
+    fiber = new Fiber(&collect2);
+
+    fiber.call();
+    GC.collect();
+    fiber.call();
+
+    static void recurse(size_t cnt)
+    {
+        --cnt;
+        Fiber.yield();
+        if (cnt)
+        {
+            auto fib = new Fiber(() { recurse(cnt); });
+            fib.call();
+            GC.collect();
+            fib.call();
+        }
+    }
+    fiber = new Fiber(() { recurse(20); });
+    fiber.call();
+}
+
 }
 
 version( AsmX86_64_Posix )
@@ -4533,40 +4744,5 @@ version( AsmX86_64_Posix )
 
         auto fib = new Fiber(&testStackAlignment);
         fib.call();
-    }
-}
-
-
-version( OSX )
-{
-    // NOTE: The Mach-O object file format does not allow for thread local
-    //       storage declarations. So instead we roll our own by putting tls
-    //       into the sections bracketed by _tls_beg and _tls_end.
-    //
-    //       This function is called by the code emitted by the compiler.  It
-    //       is expected to translate an address into the TLS static data to
-    //       the corresponding address in the TLS dynamic per-thread data.
-    extern (D) void* ___tls_get_addr( void* p )
-    {
-        // NOTE: p is an address in the TLS static data emitted by the
-        //       compiler.  If it isn't, something is disastrously wrong.
-        auto obj = Thread.getThis();
-
-        immutable off0 = cast(size_t)(p - _tls_data_array[0].ptr);
-        if (off0 < _tls_data_array[0].length)
-        {
-            return obj.m_tls.ptr + off0;
-        }
-        immutable off1 = cast(size_t)(p - _tls_data_array[1].ptr);
-        if (off1 < _tls_data_array[1].length)
-        {
-            size_t sz = (_tls_data_array[0].length + 15) & ~cast(size_t)15;
-            return obj.m_tls.ptr + sz + off1;
-        }
-        else
-            assert(0);
-
-        //assert( p >= cast(void*) &_tls_beg && p < cast(void*) &_tls_end );
-        //return obj.m_tls.ptr + (p - cast(void*) &_tls_beg);
     }
 }

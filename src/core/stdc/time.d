@@ -55,8 +55,15 @@ else
     }
 }
 
-alias c_long time_t;
-alias c_long clock_t;
+version ( Posix )
+{
+    public import core.sys.posix.sys.types : time_t, clock_t;
+}
+else
+{
+    alias c_long time_t;
+    alias c_long clock_t;
+}
 
 version( Windows )
 {
@@ -72,7 +79,11 @@ else version( FreeBSD )
 }
 else version (linux)
 {
-    enum clock_t CLOCKS_PER_SEC = 1000000;
+    enum clock_t CLOCKS_PER_SEC = 1_000_000;
+}
+else version (Android)
+{
+    enum clock_t CLOCKS_PER_SEC = 1_000_000;
 }
 
 clock_t clock();
@@ -110,6 +121,11 @@ else version( FreeBSD )
     extern __gshared const(char)*[2] tzname; // non-standard
 }
 else version (Solaris)
+{
+    void tzset();
+    extern __gshared const(char)*[2] tzname;
+}
+else version( Android )
 {
     void tzset();
     extern __gshared const(char)*[2] tzname;

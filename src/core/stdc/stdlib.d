@@ -46,6 +46,7 @@ else version(linux)   enum RAND_MAX = 0x7fffffff;
 else version(OSX)     enum RAND_MAX = 0x7fffffff;
 else version(FreeBSD) enum RAND_MAX = 0x7fffffff;
 else version(Solaris) enum RAND_MAX = 0x7fff;
+else version(Android) enum RAND_MAX = 0x7fffffff;
 else static assert( false, "Unsupported platform" );
 
 double  atof(in char* nptr);
@@ -64,6 +65,18 @@ version (Win64)
 {
     real strtold(in char* nptr, char** endptr)
     {   // Fake it 'till we make it
+        return strtod(nptr, endptr);
+    }
+}
+else version (MinGW)
+{
+    real __mingw_strtold(in char* nptr, char** endptr);
+    alias __mingw_strtold strtold;
+}
+else version (Android)
+{
+    real strtold(in char* nptr, char** endptr)
+    {   // Fake it again till we make it
         return strtod(nptr, endptr);
     }
 }
@@ -121,6 +134,10 @@ version( DigitalMars )
 {
     // See malloc comment about @trusted.
     void* alloca(size_t size); // non-standard
+}
+else version( GNU )
+{
+    void* alloca(size_t size); // compiler intrinsic
 }
 
 version (Win64)

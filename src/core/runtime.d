@@ -14,6 +14,20 @@
  */
 module core.runtime;
 
+version (Windows) import core.stdc.wchar_ : wchar_t;
+
+
+/// C interface for Runtime.loadLibrary
+extern (C) void* rt_loadLibrary(const char* name);
+/// ditto
+version (Windows) extern (C) void* rt_loadLibraryW(const wchar_t* name);
+/// C interface for Runtime.unloadLibrary, returns 1/0 instead of bool
+extern (C) int rt_unloadLibrary(void* ptr);
+
+/// C interface for Runtime.initialize, returns 1/0 instead of bool
+extern(C) int rt_init();
+/// C interface for Runtime.terminate, returns 1/0 instead of bool
+extern(C) int rt_term();
 
 private
 {
@@ -28,11 +42,6 @@ private
     extern (C) TraceHandler rt_getTraceHandler();
 
     alias void delegate( Throwable ) ExceptionHandler;
-    extern (C) bool rt_init( ExceptionHandler dg = null );
-    extern (C) bool rt_term( ExceptionHandler dg = null );
-
-    extern (C) void* rt_loadLibrary( in char[] name );
-    extern (C) bool  rt_unloadLibrary( void* ptr );
 
     extern (C) void* thread_stackBottom();
 
@@ -75,6 +84,15 @@ static this()
 // Runtime
 ///////////////////////////////////////////////////////////////////////////////
 
+/**
+ * Stores the unprocessed arguments supplied when the
+ * process was started.
+ */
+struct CArgs
+{
+    int argc; /// The argument count.
+    char** argv; /// The arguments as a C array of strings.
+}
 
 /**
  * This struct encapsulates all functionality related to the underlying runtime
@@ -86,18 +104,21 @@ struct Runtime
      * Initializes the runtime.  This call is to be used in instances where the
      * standard program initialization process is not executed.  This is most
      * often in shared libraries or in libraries linked to a C program.
-     *
-     * Params:
-     *  dg = A delegate which will receive any exception thrown during the
-     *       initialization process or null if such exceptions should be
-     *       discarded.
+     * If the runtime was already successfully initialized this returns true.
+     * Each call to initialize must be paired by a call to $(LREF, terminate).
      *
      * Returns:
-     *  true if initialization succeeds and false if initialization fails.
+     *  true if initialization succeeded or false if initialization failed.
      */
-    static bool initialize( ExceptionHandler dg = null )
+    static bool initialize()
     {
-        return rt_init( dg );
+        return !!rt_init();
+    }
+
+    deprecated("Please use the overload of Runtime.initialize that takes no argument.")
+    static bool initialize(ExceptionHandler dg = null)
+    {
+        return !!rt_init();
     }
 
 
@@ -105,18 +126,20 @@ struct Runtime
      * Terminates the runtime.  This call is to be used in instances where the
      * standard program termination process will not be not executed.  This is
      * most often in shared libraries or in libraries linked to a C program.
-     *
-     * Params:
-     *  dg = A delegate which will receive any exception thrown during the
-     *       termination process or null if such exceptions should be
-     *       discarded.
+     * If the runtime was not successfully initialized the function returns false.
      *
      * Returns:
-     *  true if termination succeeds and false if termination fails.
+     *  true if termination succeeded or false if termination failed.
      */
-    static bool terminate( ExceptionHandler dg = null )
+    static bool terminate()
     {
-        return rt_term( dg );
+        return !!rt_term();
+    }
+
+    deprecated("Please use the overload of Runtime.terminate that takes no argument.")
+    static bool terminate(ExceptionHandler dg = null)
+    {
+        return !!rt_term();
     }
 
 
@@ -132,11 +155,25 @@ struct Runtime
     }
 
     /**
-     * Returns the unprocessed C arguments supplied when the process was
-     * started. Use this when you need to supply argc and argv to C libraries.
+     * Returns the unprocessed C arguments supplied when the process was started.
+     * Use this when you need to supply argc and argv to C libraries.
      *
      * Returns:
-     *  The arguments supplied when this process was started.
+     *  A $(LREF CArgs) struct with the arguments supplied when this process was started.
+     *
+     * Example:
+     * ---
+     * import core.runtime;
+     *
+     * // A C library function requiring char** arguments
+     * extern(C) void initLibFoo(int argc, char** argv);
+     *
+     * void main()
+     * {
+     *     auto args = Runtime.cArgs;
+     *     initLibFoo(args.argc, args.argv);
+     * }
+     * ---
      */
     static @property CArgs cArgs()
     {
@@ -154,9 +191,47 @@ struct Runtime
      * Returns:
      *  A reference to the library or null on error.
      */
-    static void* loadLibrary( in char[] name )
+    static void* loadLibrary()(in char[] name)
     {
-        return rt_loadLibrary( name );
+        import core.stdc.stdlib : free, malloc;
+        version (Windows)
+        {
+            import core.sys.windows.windows;
+
+            if (name.length == 0) return null;
+            // Load a DLL at runtime
+            auto len = MultiByteToWideChar(
+                CP_UTF8, 0, name.ptr, cast(int)name.length, null, 0);
+            if (len == 0)
+                return null;
+
+            auto buf = cast(wchar_t*)malloc((len+1) * wchar_t.sizeof);
+            if (buf is null) return null;
+            scope (exit) free(buf);
+
+            len = MultiByteToWideChar(
+                CP_UTF8, 0, name.ptr, cast(int)name.length, buf, len);
+            if (len == 0)
+                return null;
+
+            buf[len] = '\0';
+
+            return rt_loadLibraryW(buf);
+        }
+        else version (Posix)
+        {
+            /* Need a 0-terminated C string for the dll name
+             */
+            immutable len = name.length;
+            auto buf = cast(char*)malloc(len + 1);
+            if (!buf) return null;
+            scope (exit) free(buf);
+
+            buf[0 .. len] = name[];
+            buf[len] = 0;
+
+            return rt_loadLibrary(buf);
+        }
     }
 
 
@@ -168,9 +243,9 @@ struct Runtime
      * Params:
      *  p = A reference to the library to unload.
      */
-    static bool unloadLibrary( void* p )
+    static bool unloadLibrary()(void* p)
     {
-        return rt_unloadLibrary( p );
+        return !!rt_unloadLibrary(p);
     }
 
 
@@ -194,7 +269,7 @@ struct Runtime
      * Gets the current trace handler.
      *
      * Returns:
-     *  The current trace handler or null if no trace handler is set.
+     *  The current trace handler or null if none has been set.
      */
     static @property TraceHandler traceHandler()
     {
@@ -222,7 +297,7 @@ struct Runtime
      * Gets the current collect handler.
      *
      * Returns:
-     *  The current collect handler or null if no trace handler is set.
+     *  The current collect handler or null if none has been set.
      */
     static @property CollectHandler collectHandler()
     {
@@ -249,8 +324,7 @@ struct Runtime
      * Gets the current module unit tester.
      *
      * Returns:
-     *  The current module unit tester handler or null if no trace handler is
-     *  set.
+     *  The current module unit tester handler or null if none has been set.
      */
     static @property ModuleUnitTester moduleUnitTester()
     {
@@ -263,16 +337,6 @@ private:
     //       never occur within any but the main thread, so it is safe to
     //       make it __gshared.
     __gshared ModuleUnitTester sm_moduleUnitTester = null;
-}
-
-/**
- * This struct stores the unprocessed arguments supplied when the
- * process was started.
- */
-struct CArgs
-{
-    int argc;
-    char** argv;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -322,28 +386,13 @@ extern (C) bool runModuleUnitTests()
         }
     }
 
-    static struct Console
-    {
-        Console opCall( in char[] val )
-        {
-            version( Windows )
-            {
-                DWORD count = void;
-                assert(val.length <= uint.max, "val must be less than or equal to uint.max");
-                WriteFile( GetStdHandle( 0xfffffff5 ), val.ptr, cast(uint)val.length, &count, null );
-            }
-            else version( Posix )
-            {
-                write( 2, val.ptr, val.length );
-            }
-            return this;
-        }
-    }
-
-    static __gshared Console console;
-
     if( Runtime.sm_moduleUnitTester is null )
     {
+        void printErr(in char[] buf)
+        {
+            .fprintf(.stderr, "%.*s", cast(int)buf.length, buf.ptr);
+        }
+
         size_t failed = 0;
         foreach( m; ModuleInfo )
         {
@@ -359,7 +408,7 @@ extern (C) bool runModuleUnitTests()
                     }
                     catch( Throwable e )
                     {
-                        console( e.toString() )( "\n" );
+                        e.toString(&printErr); printErr("\n");
                         failed++;
                     }
                 }
@@ -393,8 +442,6 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
         {
             this()
             {
-                static enum MAXFRAMES = 128;
-                void*[MAXFRAMES]  callstack;
                 numframes = 0; //backtrace( callstack, MAXFRAMES );
                 if (numframes < 2) // backtrace() failed, do it ourselves
                 {
@@ -426,12 +473,6 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
                         }
                     }
                 }
-                framelist = backtrace_symbols( callstack.ptr, numframes );
-            }
-
-            ~this()
-            {
-                free( framelist );
             }
 
             override int opApply( scope int delegate(ref const(char[])) dg ) const
@@ -463,6 +504,9 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
                 }
                 int ret = 0;
 
+                const framelist = backtrace_symbols( callstack.ptr, numframes );
+                scope(exit) free(cast(void*) framelist);
+
                 for( int i = FIRSTFRAME; i < numframes; ++i )
                 {
                     char[4096] fixbuf;
@@ -486,7 +530,8 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
 
         private:
             int     numframes;
-            char**  framelist;
+            static enum MAXFRAMES = 128;
+            void*[MAXFRAMES]  callstack = void;
 
         private:
             const(char)[] fixline( const(char)[] buf, ref char[4096] fixbuf ) const
@@ -548,7 +593,7 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
                 }
 
                 assert(symBeg < buf.length && symEnd < buf.length);
-                assert(symBeg < symEnd);
+                assert(symBeg <= symEnd);
 
                 enum min = (size_t a, size_t b) => a <= b ? a : b;
                 if (symBeg == symEnd || symBeg >= fixbuf.length)
@@ -584,20 +629,18 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
 
         return new DefaultTraceInfo;
     }
-    else static if( __traits( compiles, new StackTrace ) )
+    else static if( __traits( compiles, new StackTrace(0, null) ) )
     {
         version (Win64)
         {
-            /* Disabled for the moment, because DbgHelp's stack walking code
-             * does not work with dmd's stack frame.
-             */
-            return null;
+            static enum FIRSTFRAME = 4;
         }
         else
         {
-            auto s = new StackTrace;
-            return s;
+            static enum FIRSTFRAME = 0;
         }
+        auto s = new StackTrace(FIRSTFRAME, cast(CONTEXT*)ptr);
+        return s;
     }
     else
     {

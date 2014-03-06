@@ -1,17 +1,12 @@
 /**
  * This module contains a collection of bit-level operations.
  *
- * Copyright: Copyright Don Clugston 2005 - 2009.
+ * Copyright: Copyright Don Clugston 2005 - 2013.
  * License:   $(LINK2 http://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Authors:   Don Clugston, Sean Kelly, Walter Bright, Alex Rønne Petersen
  * Source:    $(DRUNTIMESRC core/_bitop.d)
  */
 
-/*          Copyright Don Clugston 2005 - 2009.
- * Distributed under the Boost Software License, Version 1.0.
- *    (See accompanying file LICENSE or copy at
- *          http://www.boost.org/LICENSE_1_0.txt)
- */
 module core.bitop;
 
 nothrow:
@@ -78,27 +73,48 @@ unittest
 
 /**
  * Tests the bit.
+ * (No longer an intrisic - the compiler recognizes the patterns
+ * in the body.)
  */
-int bt(in size_t* p, size_t bitnum) pure;
+int bt(in size_t* p, size_t bitnum) pure @system
+{
+    static if (size_t.sizeof == 8)
+        return ((p[bitnum >> 6] & (1L << (bitnum & 63)))) != 0;
+    else static if (size_t.sizeof == 4)
+        return ((p[bitnum >> 5] & (1  << (bitnum & 31)))) != 0;
+    else
+        static assert(0);
+}
+///
+@system pure unittest
+{
+    size_t array[2];
 
+    array[0] = 2;
+    array[1] = 0x100;
+
+    assert(bt(array.ptr, 1));
+    assert(array[0] == 2);
+    assert(array[1] == 0x100);
+}
 
 /**
  * Tests and complements the bit.
  */
-int btc(size_t* p, size_t bitnum) pure;
+int btc(size_t* p, size_t bitnum) pure @system;
 
 
 /**
  * Tests and resets (sets to 0) the bit.
  */
-int btr(size_t* p, size_t bitnum) pure;
+int btr(size_t* p, size_t bitnum) pure @system;
 
 
 /**
  * Tests and sets the bit.
  * Params:
  * p = a non-NULL pointer to an array of size_ts.
- * index = a bit number, starting with bit 0 of p[0],
+ * bitnum = a bit number, starting with bit 0 of p[0],
  * and progressing. It addresses bits like the expression:
 ---
 p[index / (size_t.sizeof*8)] & (1 << (index & ((size_t.sizeof*8) - 1)))
@@ -106,46 +122,11 @@ p[index / (size_t.sizeof*8)] & (1 << (index & ((size_t.sizeof*8) - 1)))
  * Returns:
  *      A non-zero value if the bit was set, and a zero
  *      if it was clear.
- *
- * Example:
- * ---
-import std.stdio;
-import core.bitop;
-
-int main()
-{
-    size_t array[2];
-
-    array[0] = 2;
-    array[1] = 0x100;
-
-    assert(btc(array, 35) == 0);
-    assert(array[0] == 2);
-    assert(array[1] == 0x108);
-
-    assert(btc(array, 35) == -1);
-    assert(array[0] == 2);
-    assert(array[1] == 0x100);
-
-    assert(bts(array, 35) == 0);
-    assert(array[0] == 2);
-    assert(array[1] == 0x108);
-
-    assert(btr(array, 35) == -1);
-    assert(array[0] == 2);
-    assert(array[1] == 0x100);
-
-    assert(bt(array, 1) == -1);
-    assert(array[0] == 2);
-    assert(array[1] == 0x100);
-
-    return 0;
-}
- * ---
  */
-int bts(size_t* p, size_t bitnum) pure;
+int bts(size_t* p, size_t bitnum) pure @system;
 
-unittest
+///
+@system pure unittest
 {
     size_t array[2];
 
@@ -164,7 +145,7 @@ unittest
         assert(array[1] == 0x108);
     }
 
-    assert(btc(array.ptr, 35) == -1);
+    assert(btc(array.ptr, 35));
     assert(array[0] == 2);
     assert(array[1] == 0x100);
 
@@ -180,11 +161,7 @@ unittest
         assert(array[1] == 0x108);
     }
 
-    assert(btr(array.ptr, 35) == -1);
-    assert(array[0] == 2);
-    assert(array[1] == 0x100);
-
-    assert(bt(array.ptr, 1) == -1);
+    assert(btr(array.ptr, 35));
     assert(array[0] == 2);
     assert(array[1] == 0x100);
 }

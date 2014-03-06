@@ -309,6 +309,77 @@ else version( linux )
     }
   }
 }
+else version( MinGW )
+{
+    enum
+    {
+        FP_NAN = 0x0100,
+        FP_NORMAL = 0x0400,
+        FP_INFINITE = FP_NAN | FP_NORMAL,
+        FP_ZERO = 0x0400,
+        FP_SUBNORMAL = FP_NORMAL | FP_ZERO
+    }
+
+    int __fpclassifyf(float x);
+    int __fpclassify(double x);
+    int __fpclassifyl(real x);
+
+    int __isnanf(float x);
+    int __isnan(double x);
+    int __isnanl(real x);
+
+    int __signbitf(float x);
+    int __signbit(double x);
+    int __signbitl(real x);
+
+  extern (D)
+  {
+    //int fpclassify(real-floating x);
+    int fpclassify(float x)     { return __fpclassifyf(x); }
+    int fpclassify(double x)    { return __fpclassify(x);  }
+    int fpclassify(real x)
+    {
+        return (real.sizeof == double.sizeof)
+            ? __fpclassify(x)
+            : __fpclassifyl(x);
+    }
+
+    //int isfinite(real-floating x);
+    int isfinite(float x)       { return (fpclassify(x) & FP_NORMAL) == 0; }
+    int isfinite(double x)      { return (fpclassify(x) & FP_NORMAL) == 0; }
+    int isfinite(real x)        { return (fpclassify(x) & FP_NORMAL) == 0; }
+
+    //int isinf(real-floating x);
+    int isinf(float x)          { return fpclassify(x) == FP_INFINITE; }
+    int isinf(double x)         { return fpclassify(x) == FP_INFINITE; }
+    int isinf(real x)           { return fpclassify(x) == FP_INFINITE; }
+
+    //int isnan(real-floating x);
+    int isnan(float x)          { return __isnanf(x);  }
+    int isnan(double x)         { return __isnan(x);   }
+    int isnan(real x)
+    {
+        return (real.sizeof == double.sizeof)
+            ? __isnan(x)
+            : __isnanl(x);
+    }
+
+    //int isnormal(real-floating x);
+    int isnormal(float x)       { return fpclassify(x) == FP_NORMAL; }
+    int isnormal(double x)      { return fpclassify(x) == FP_NORMAL; }
+    int isnormal(real x)        { return fpclassify(x) == FP_NORMAL; }
+
+    //int signbit(real-floating x);
+    int signbit(float x)     { return __signbitf(x); }
+    int signbit(double x)    { return __signbit(x);  }
+    int signbit(real x)
+    {
+        return (real.sizeof == double.sizeof)
+            ? __signbit(x)
+            : __signbitl(x);
+    }
+  }
+}
 else version( OSX )
 {
     enum
@@ -473,38 +544,107 @@ else version( FreeBSD )
     int signbit(real x)         { return __signbit(x); }
   }
 }
+else version( Android )
+{
+    enum
+    {
+        FP_INFINITE  = 0x01,
+        FP_NAN       = 0x02,
+        FP_NORMAL    = 0x04,
+        FP_SUBNORMAL = 0x08,
+        FP_ZERO      = 0x10,
+    }
+
+    enum FP_FAST_FMAF;
+
+    int __fpclassifyd(double);
+    int __fpclassifyf(float);
+    int __fpclassifyl(real);
+
+    int __isfinitef(float);
+    int __isfinite(double);
+    int __isfinitel(real);
+
+    int __isinff(float);
+    int __isinf(double);
+    int __isinfl(real);
+
+    int isnanf(float);
+    int isnan(double);
+    int __isnanl(real);
+
+    int __isnormalf(float);
+    int __isnormal(double);
+    int __isnormall(real);
+
+    int __signbit(double);
+    int __signbitf(float);
+    int __signbitl(real);
+
+  extern (D)
+  {
+    //int fpclassify(real-floating x);
+    int fpclassify(float x)     { return __fpclassifyf(x); }
+    int fpclassify(double x)    { return __fpclassifyd(x); }
+    int fpclassify(real x)      { return __fpclassifyl(x); }
+
+    //int isfinite(real-floating x);
+    int isfinite(float x)       { return __isfinitef(x); }
+    int isfinite(double x)      { return __isfinite(x); }
+    int isfinite(real x)        { return __isfinitel(x); }
+
+    //int isinf(real-floating x);
+    int isinf(float x)          { return __isinff(x); }
+    int isinf(double x)         { return __isinf(x); }
+    int isinf(real x)           { return __isinfl(x); }
+
+    //int isnan(real-floating x);
+    int isnan(float x)          { return isnanf(x); }
+    int isnan(real x)           { return __isnanl(x); }
+
+    //int isnormal(real-floating x);
+    int isnormal(float x)       { return __isnormalf(x); }
+    int isnormal(double x)      { return __isnormal(x); }
+    int isnormal(real x)        { return __isnormall(x); }
+
+    //int signbit(real-floating x);
+    int signbit(float x)        { return __signbitf(x); }
+    int signbit(double x)       { return __signbit(x); }
+    int signbit(real x)         { return __signbitl(x); }
+  }
+}
 
 extern (D)
 {
     //int isgreater(real-floating x, real-floating y);
-    int isgreater(float x, float y)        { return !(x !>  y); }
-    int isgreater(double x, double y)      { return !(x !>  y); }
-    int isgreater(real x, real y)          { return !(x !>  y); }
+    int isgreater(float x, float y)        { return x > y && !isunordered(x, y); }
+    int isgreater(double x, double y)      { return x > y && !isunordered(x, y); }
+    int isgreater(real x, real y)          { return x > y && !isunordered(x, y); }
 
     //int isgreaterequal(real-floating x, real-floating y);
-    int isgreaterequal(float x, float y)   { return !(x !>= y); }
-    int isgreaterequal(double x, double y) { return !(x !>= y); }
-    int isgreaterequal(real x, real y)     { return !(x !>= y); }
+    int isgreaterequal(float x, float y)   { return x >= y && !isunordered(x, y); }
+    int isgreaterequal(double x, double y) { return x >= y && !isunordered(x, y); }
+    int isgreaterequal(real x, real y)     { return x >= y && !isunordered(x, y); }
 
     //int isless(real-floating x, real-floating y);
-    int isless(float x, float y)           { return !(x !<  y); }
-    int isless(double x, double y)         { return !(x !<  y); }
-    int isless(real x, real y)             { return !(x !<  y); }
+    int isless(float x, float y)           { return x < y && !isunordered(x, y); }
+    int isless(double x, double y)         { return x < y && !isunordered(x, y); }
+    int isless(real x, real y)             { return x < y && !isunordered(x, y); }
 
     //int islessequal(real-floating x, real-floating y);
-    int islessequal(float x, float y)      { return !(x !<= y); }
-    int islessequal(double x, double y)    { return !(x !<= y); }
-    int islessequal(real x, real y)        { return !(x !<= y); }
+    int islessequal(float x, float y)      { return x <= y && !isunordered(x, y); }
+    int islessequal(double x, double y)    { return x <= y && !isunordered(x, y); }
+    int islessequal(real x, real y)        { return x <= y && !isunordered(x, y); }
 
     //int islessgreater(real-floating x, real-floating y);
-    int islessgreater(float x, float y)    { return !(x !<> y); }
-    int islessgreater(double x, double y)  { return !(x !<> y); }
-    int islessgreater(real x, real y)      { return !(x !<> y); }
+    int islessgreater(float x, float y)    { return x != y && !isunordered(x, y); }
+    int islessgreater(double x, double y)  { return x != y && !isunordered(x, y); }
+    int islessgreater(real x, real y)      { return x != y && !isunordered(x, y); }
 
     //int isunordered(real-floating x, real-floating y);
-    int isunordered(float x, float y)      { return (x !<>= y); }
-    int isunordered(double x, double y)    { return (x !<>= y); }
-    int isunordered(real x, real y)        { return (x !<>= y); }
+    int isunordered(float x, float y)      { return isnan(x) || isnan(y); }
+    int isunordered(double x, double y)    { return isnan(x) || isnan(y); }
+    int isunordered(real x, real y)        { return isnan(x) || isnan(y); }
 }
 
 /* NOTE: freebsd < 8-CURRENT doesn't appear to support *l, but we can

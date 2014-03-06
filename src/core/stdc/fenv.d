@@ -32,23 +32,53 @@ version( Windows )
 }
 else version( linux )
 {
-    struct fenv_t
+    // https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86/fpu/bits/fenv.h
+    version (X86)
     {
-        ushort __control_word;
-        ushort __unused1;
-        ushort __status_word;
-        ushort __unused2;
-        ushort __tags;
-        ushort __unused3;
-        uint   __eip;
-        ushort __cs_selector;
-        ushort __opcode;
-        uint   __data_offset;
-        ushort __data_selector;
-        ushort __unused5;
-    }
+        struct fenv_t
+        {
+            ushort __control_word;
+            ushort __unused1;
+            ushort __status_word;
+            ushort __unused2;
+            ushort __tags;
+            ushort __unused3;
+            uint   __eip;
+            ushort __cs_selector;
+            ushort __opcode;
+            uint   __data_offset;
+            ushort __data_selector;
+            ushort __unused5;
+        }
 
-    alias int fexcept_t;
+        alias fexcept_t = ushort;
+    }
+    // https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86/fpu/bits/fenv.h
+    else version (X86_64)
+    {
+        struct fenv_t
+        {
+            ushort __control_word;
+            ushort __unused1;
+            ushort __status_word;
+            ushort __unused2;
+            ushort __tags;
+            ushort __unused3;
+            uint   __eip;
+            ushort __cs_selector;
+            ushort __opcode;
+            uint   __data_offset;
+            ushort __data_selector;
+            ushort __unused5;
+            uint   __mxcsr;
+        }
+
+        alias fexcept_t = ushort;
+    }
+    else
+    {
+        static assert(0, "Unimplemented architecture");
+    }
 }
 else version ( OSX )
 {
@@ -84,6 +114,27 @@ else version ( FreeBSD )
 
     alias ushort fexcept_t;
 }
+else version( Android )
+{
+    version(X86)
+    {
+        struct fenv_t
+        {
+            ushort   __control;
+            ushort   __mxcsr_hi;
+            ushort   __status;
+            ushort   __mxcsr_lo;
+            uint     __tag;
+            byte[16] __other;
+        }
+    
+        alias ushort fexcept_t;
+    }
+    else
+    {
+        static assert(false, "Architecture not supported.");
+    }
+}
 else
 {
     static assert( false, "Unsupported platform" );
@@ -106,7 +157,7 @@ enum
 
 version( Windows )
 {
-    private extern fenv_t _FE_DFL_ENV;
+    private extern __gshared fenv_t _FE_DFL_ENV;
     fenv_t* FE_DFL_ENV = &_FE_DFL_ENV;
 }
 else version( linux )
@@ -115,10 +166,15 @@ else version( linux )
 }
 else version( OSX )
 {
-    private extern fenv_t _FE_DFL_ENV;
+    private extern __gshared fenv_t _FE_DFL_ENV;
     fenv_t* FE_DFL_ENV = &_FE_DFL_ENV;
 }
 else version( FreeBSD )
+{
+    private extern const fenv_t __fe_dfl_env;
+    const fenv_t* FE_DFL_ENV = &__fe_dfl_env;
+}
+else version( Android )
 {
     private extern const fenv_t __fe_dfl_env;
     const fenv_t* FE_DFL_ENV = &__fe_dfl_env;

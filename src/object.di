@@ -35,7 +35,6 @@ class Object
     size_t   toHash() @trusted nothrow;
     int      opCmp(Object o);
     bool     opEquals(Object o);
-    bool     opEquals(Object lhs, Object rhs);
 
     interface Monitor
     {
@@ -48,7 +47,6 @@ class Object
 
 bool opEquals(const Object lhs, const Object rhs);
 bool opEquals(Object lhs, Object rhs);
-//bool opEquals(TypeInfo lhs, TypeInfo rhs);
 
 void setSameMutex(shared Object ownee, shared Object owner);
 
@@ -56,7 +54,7 @@ struct Interface
 {
     TypeInfo_Class   classinfo;
     void*[]     vtbl;
-    ptrdiff_t   offset;   // offset to Interface 'this' from Object 'this'
+    size_t      offset;   // offset to Interface 'this' from Object 'this'
 }
 
 struct OffsetTypeInfo
@@ -67,12 +65,16 @@ struct OffsetTypeInfo
 
 class TypeInfo
 {
+    override string toString() const;
+    override size_t toHash() @trusted const;
+    override int opCmp(Object o);
+    override bool opEquals(Object o);
     size_t   getHash(in void* p) @trusted nothrow const;
     bool     equals(in void* p1, in void* p2) const;
     int      compare(in void* p1, in void* p2) const;
     @property size_t   tsize() nothrow pure const @safe;
     void     swap(void* p1, void* p2) const;
-    @property const(TypeInfo) next() nothrow pure const;
+    @property inout(TypeInfo) next() nothrow pure inout;
     const(void)[]   init() nothrow pure const @safe; // TODO: make this a property, but may need to be renamed to diambiguate with T.init...
     @property uint     flags() nothrow pure const @safe;
     // 1:    // has possible pointers into GC memory
@@ -110,17 +112,12 @@ class TypeInfo_Array : TypeInfo
     override int compare(in void* p1, in void* p2) const;
     override @property size_t tsize() nothrow pure const;
     override void swap(void* p1, void* p2) const;
-    override @property const(TypeInfo) next() nothrow pure const;
+    override @property inout(TypeInfo) next() nothrow pure inout;
     override @property uint flags() nothrow pure const;
     override @property size_t talign() nothrow pure const;
     version (X86_64) override int argTypes(out TypeInfo arg1, out TypeInfo arg2);
 
     TypeInfo value;
-}
-
-class TypeInfo_Vector : TypeInfo
-{
-    TypeInfo base;
 }
 
 class TypeInfo_StaticArray : TypeInfo
@@ -133,7 +130,11 @@ class TypeInfo_AssociativeArray : TypeInfo
 {
     TypeInfo value;
     TypeInfo key;
-    TypeInfo impl;
+}
+
+class TypeInfo_Vector : TypeInfo
+{
+    TypeInfo base;
 }
 
 class TypeInfo_Function : TypeInfo
@@ -160,13 +161,18 @@ class TypeInfo_Class : TypeInfo
     TypeInfo_Class   base;
     void*       destructor;
     void function(Object) classInvariant;
-    uint        m_flags;
-    //  1:      // is IUnknown or is derived from IUnknown
-    //  2:      // has no possible pointers into GC memory
-    //  4:      // has offTi[] member
-    //  8:      // has constructors
-    // 16:      // has xgetMembers member
-    // 32:      // has typeinfo member
+    enum ClassFlags : uint
+    {
+        isCOMclass = 0x1,
+        noPointers = 0x2,
+        hasOffTi = 0x4,
+        hasCtor = 0x8,
+        hasGetMembers = 0x10,
+        hasTypeInfo = 0x20,
+        isAbstract = 0x40,
+        isCPPclass = 0x80,
+    }
+    ClassFlags m_flags;
     void*       deallocator;
     OffsetTypeInfo[] m_offTi;
     void*       defaultConstructor;
@@ -195,7 +201,11 @@ class TypeInfo_Struct : TypeInfo
     int function(in void*, in void*)      xopCmp;
     string function(in void*)             xtoString;
 
-    uint m_flags;
+    enum StructFlags : uint
+    {
+        hasPointers = 0x1,
+    }
+    StructFlags m_flags;
   }
     void function(void*)                    xdtor;
     void function(void*)                    xpostblit;
@@ -266,37 +276,9 @@ class MemberInfo_function : MemberInfo
 
 struct ModuleInfo
 {
-    struct New
-    {
-        uint flags;
-        uint index;
-    }
+    uint _flags;
+    uint _index;
 
-    struct Old
-    {
-        string           name;
-        ModuleInfo*[]    importedModules;
-        TypeInfo_Class[] localClasses;
-        uint             flags;
-
-        void function() ctor;
-        void function() dtor;
-        void function() unitTest;
-        void* xgetMembers;
-        void function() ictor;
-        void function() tlsctor;
-        void function() tlsdtor;
-        uint index;
-        void*[1] reserved;
-    }
-
-    union
-    {
-        New n;
-        Old o;
-    }
-
-    @property bool isNew() nothrow pure;
     @property uint index() nothrow pure;
     @property void index(uint i) nothrow pure;
     @property uint flags() nothrow pure;
@@ -333,6 +315,7 @@ class Throwable : Object
     @safe pure nothrow this(string msg, Throwable next = null);
     @safe pure nothrow this(string msg, string file, size_t line, Throwable next = null);
     override string toString();
+    void toString(scope void delegate(in char[]) sink) const;
 }
 
 
@@ -368,199 +351,141 @@ class Error : Throwable
 
 extern (C)
 {
-    // from druntime/src/compiler/dmd/aaA.d
+    // from druntime/src/rt/aaA.d
 
-    size_t _aaLen(void* p);
-    void*  _aaGet(void** pp, TypeInfo keyti, size_t valuesize, ...);
-    void*  _aaGetRvalue(void* p, TypeInfo keyti, size_t valuesize, ...);
-    void*  _aaIn(void* p, TypeInfo keyti);
-    void   _aaDel(void* p, TypeInfo keyti, ...);
-    void[] _aaValues(void* p, size_t keysize, size_t valuesize);
-    void[] _aaKeys(void* p, size_t keysize);
-    void*  _aaRehash(void** pp, TypeInfo keyti);
+    // size_t _aaLen(in void* p) pure nothrow;
+    // void* _aaGetX(void** pp, const TypeInfo keyti, in size_t valuesize, in void* pkey);
+    // inout(void)* _aaGetRvalueX(inout void* p, in TypeInfo keyti, in size_t valuesize, in void* pkey);
+    inout(void)[] _aaValues(inout void* p, in size_t keysize, in size_t valuesize) pure nothrow;
+    inout(void)[] _aaKeys(inout void* p, in size_t keysize) pure nothrow;
+    void* _aaRehash(void** pp, in TypeInfo keyti) pure nothrow;
 
-    extern (D) alias scope int delegate(void *) _dg_t;
-    int _aaApply(void* aa, size_t keysize, _dg_t dg);
+    // extern (D) alias scope int delegate(void *) _dg_t;
+    // int _aaApply(void* aa, size_t keysize, _dg_t dg);
 
-    extern (D) alias scope int delegate(void *, void *) _dg2_t;
-    int _aaApply2(void* aa, size_t keysize, _dg2_t dg);
+    // extern (D) alias scope int delegate(void *, void *) _dg2_t;
+    // int _aaApply2(void* aa, size_t keysize, _dg2_t dg);
 
-    void* _d_assocarrayliteralT(TypeInfo_AssociativeArray ti, size_t length, ...);
+    private struct AARange { void* impl, current; }
+    AARange _aaRange(void* aa);
+    bool _aaRangeEmpty(AARange r);
+    void* _aaRangeFrontKey(AARange r);
+    void* _aaRangeFrontValue(AARange r);
+    void _aaRangePopFront(ref AARange r);
 }
 
-struct AssociativeArray(Key, Value)
+alias AssociativeArray(Key, Value) = Value[Key];
+
+Value[Key] rehash(T : Value[Key], Value, Key)(auto ref T aa)
 {
-private:
-    // Duplicates of the stuff found in druntime/src/rt/aaA.d
-    struct Slot
-    {
-        Slot *next;
-        size_t hash;
-        Key key;
-        Value value;
-
-        // Stop creating built-in opAssign
-        @disable void opAssign(Slot);
-    }
-
-    struct Hashtable
-    {
-        Slot*[] b;
-        size_t nodes;
-        TypeInfo keyti;
-        Slot*[4] binit;
-    }
-
-    void* p; // really Hashtable*
-
-    struct Range
-    {
-        // State
-        Slot*[] slots;
-        Slot* current;
-
-        this(void * aa)
-        {
-            if (!aa) return;
-            auto pImpl = cast(Hashtable*) aa;
-            slots = pImpl.b;
-            nextSlot();
-        }
-
-        void nextSlot()
-        {
-            foreach (i, slot; slots)
-            {
-                if (!slot) continue;
-                current = slot;
-                slots = slots.ptr[i .. slots.length];
-                break;
-            }
-        }
-
-    public:
-        @property bool empty() const
-        {
-            return current is null;
-        }
-
-        @property ref inout(Slot) front() inout
-        {
-            assert(current);
-            return *current;
-        }
-
-        void popFront()
-        {
-            assert(current);
-            current = current.next;
-            if (!current)
-            {
-                slots = slots[1 .. $];
-                nextSlot();
-            }
-        }
-    }
-
-public:
-
-    @property size_t length() { return _aaLen(p); }
-
-    Value[Key] rehash() @property
-    {
-        auto p = _aaRehash(&p, typeid(Value[Key]));
-        return *cast(Value[Key]*)(&p);
-    }
-
-    Value[] values() @property
-    {
-        auto a = _aaValues(p, Key.sizeof, Value.sizeof);
-        return *cast(Value[]*) &a;
-    }
-
-    Key[] keys() @property
-    {
-        auto a = _aaKeys(p, Key.sizeof);
-        return *cast(Key[]*) &a;
-    }
-
-    int opApply(scope int delegate(ref Key, ref Value) dg)
-    {
-        return _aaApply2(p, Key.sizeof, cast(_dg2_t)dg);
-    }
-
-    int opApply(scope int delegate(ref Value) dg)
-    {
-        return _aaApply(p, Key.sizeof, cast(_dg_t)dg);
-    }
-
-    Value get(Key key, lazy Value defaultValue)
-    {
-        auto p = key in *cast(Value[Key]*)(&p);
-        return p ? *p : defaultValue;
-    }
-
-    static if (is(typeof({ Value[Key] r; r[Key.init] = Value.init; }())))
-        @property Value[Key] dup()
-        {
-            Value[Key] result;
-            foreach (k, v; this)
-            {
-                result[k] = v;
-            }
-            return result;
-        }
-
-    @property auto byKey()
-    {
-        static struct Result
-        {
-            Range state;
-
-            this(void* p)
-            {
-                state = Range(p);
-            }
-
-            @property ref Key front()
-            {
-                return state.front.key;
-            }
-
-            alias state this;
-        }
-
-        return Result(p);
-    }
-
-    @property auto byValue()
-    {
-        static struct Result
-        {
-            Range state;
-
-            this(void* p)
-            {
-                state = Range(p);
-            }
-
-            @property ref Value front()
-            {
-                return state.front.value;
-            }
-
-            alias state this;
-        }
-
-        return Result(p);
-    }
+    _aaRehash(cast(void**)&aa, typeid(Value[Key]));
+    return aa;
 }
 
-unittest
+Value[Key] rehash(T : Value[Key], Value, Key)(T* aa)
 {
-    auto a = [ 1:"one", 2:"two", 3:"three" ];
-    auto b = a.dup;
-    assert(b == [ 1:"one", 2:"two", 3:"three" ]);
+    _aaRehash(cast(void**)aa, typeid(Value[Key]));
+    return *aa;
+}
+
+Value[Key] dup(T : Value[Key], Value, Key)(T aa) if (is(typeof({
+    ref Value get();    // pseudo lvalue of Value
+    Value[Key] r; r[Key.init] = get();
+    // bug 10720 - check whether Value is copyable
+    })))
+{
+    Value[Key] result;
+    foreach (k, v; aa)
+    {
+        result[k] = v;
+    }
+    return result;
+}
+
+Value[Key] dup(T : Value[Key], Value, Key)(T* aa) if (is(typeof((*aa).dup)))
+{
+    return (*aa).dup;
+}
+
+@disable Value[Key] dup(T : Value[Key], Value, Key)(T aa) if (!is(typeof({
+    ref Value get();    // pseudo lvalue of Value
+    Value[Key] r; r[Key.init] = get();
+    // bug 10720 - check whether Value is copyable
+    })));
+
+Value[Key] dup(T : Value[Key], Value, Key)(T* aa) if (!is(typeof((*aa).dup)));
+
+auto byKey(T : Value[Key], Value, Key)(T aa)
+{
+    static struct Result
+    {
+        AARange r;
+
+        @property bool empty() { return _aaRangeEmpty(r); }
+        @property ref Key front() { return *cast(Key*)_aaRangeFrontKey(r); }
+        void popFront() { _aaRangePopFront(r); }
+        Result save() { return this; }
+    }
+
+    return Result(_aaRange(cast(void*)aa));
+}
+
+auto byKey(T : Value[Key], Value, Key)(T *aa)
+{
+    return (*aa).byKey();
+}
+
+auto byValue(T : Value[Key], Value, Key)(T aa)
+{
+    static struct Result
+    {
+        AARange r;
+
+        @property bool empty() { return _aaRangeEmpty(r); }
+        @property ref Value front() { return *cast(Value*)_aaRangeFrontValue(r); }
+        void popFront() { _aaRangePopFront(r); }
+        Result save() { return this; }
+    }
+
+    return Result(_aaRange(cast(void*)aa));
+}
+
+auto byValue(T : Value[Key], Value, Key)(T *aa)
+{
+    return (*aa).byValue();
+}
+
+Key[] keys(T : Value[Key], Value, Key)(T aa) @property
+{
+    auto a = cast(void[])_aaKeys(cast(inout(void)*)aa, Key.sizeof);
+    return *cast(Key[]*)&a;
+}
+
+Key[] keys(T : Value[Key], Value, Key)(T *aa) @property
+{
+    return (*aa).keys;
+}
+
+Value[] values(T : Value[Key], Value, Key)(T aa) @property
+{
+    auto a = cast(void[])_aaValues(cast(inout(void)*)aa, Key.sizeof, Value.sizeof);
+    return *cast(Value[]*)&a;
+}
+
+Value[] values(T : Value[Key], Value, Key)(T *aa) @property
+{
+    return (*aa).values;
+}
+
+inout(V) get(K, V)(inout(V[K]) aa, K key, lazy inout(V) defaultValue)
+{
+    auto p = key in aa;
+    return p ? *p : defaultValue;
+}
+
+inout(V) get(K, V)(inout(V[K])* aa, K key, lazy inout(V) defaultValue)
+{
+    return (*aa).get(key, defaultValue);
 }
 
 // Scheduled for deprecation in December 2012.
@@ -588,9 +513,9 @@ void destroy(T)(ref T obj) if (is(T == struct))
         buf[] = init[];
 }
 
-void destroy(T : U[n], U, size_t n)(ref T obj)
+void destroy(T : U[n], U, size_t n)(ref T obj) if (!is(T == struct))
 {
-    obj = T.init;
+    obj[] = U.init;
 }
 
 void destroy(T)(ref T obj)
@@ -620,14 +545,15 @@ private
     return _d_arraysetcapacity(typeid(T[]), 0, cast(void *)&arr);
 }
 
-size_t reserve(T)(ref T[] arr, size_t newcapacity) pure nothrow
+size_t reserve(T)(ref T[] arr, size_t newcapacity) pure nothrow @trusted
 {
     return _d_arraysetcapacity(typeid(T[]), newcapacity, cast(void *)&arr);
 }
 
-void assumeSafeAppend(T)(T[] arr)
+auto ref inout(T[]) assumeSafeAppend(T)(auto ref inout(T[]) arr)
 {
     _d_arrayshrinkfit(typeid(T[]), *(cast(void[]*)&arr));
+    return arr;
 }
 
 bool _ArrayEq(T1, T2)(T1[] a1, T2[] a2)
@@ -642,6 +568,7 @@ bool _ArrayEq(T1, T2)(T1[] a1, T2[] a2)
 }
 
 bool _xopEquals(in void* ptr, in void* ptr);
+bool _xopCmp(in void* ptr, in void* ptr);
 
 void __ctfeWrite(T...)(auto ref T) {}
 void __ctfeWriteln(T...)(auto ref T values) { __ctfeWrite(values, "\n"); }

@@ -80,6 +80,14 @@ version( linux )
     enum F_SETFD        = 2;
     enum F_GETFL        = 3;
     enum F_SETFL        = 4;
+  version(X86_64)
+  {
+    static assert(off_t.sizeof == 8);
+    enum F_GETLK        = 5;
+    enum F_SETLK        = 6;
+    enum F_SETLKW       = 7;
+  }
+  else
   static if( __USE_FILE_OFFSET64 )
   {
     enum F_GETLK        = 12;
@@ -101,16 +109,99 @@ version( linux )
     enum F_UNLCK        = 2;
     enum F_WRLCK        = 1;
 
-    enum O_CREAT        = 0x40;   // octal   0100
-    enum O_EXCL         = 0x80;   // octal   0200
-    enum O_NOCTTY       = 0x100;  // octal   0400
-    enum O_TRUNC        = 0x200;  // octal  01000
+    version (X86)
+    {
+        enum O_CREAT        = 0x40;     // octal     0100
+        enum O_EXCL         = 0x80;     // octal     0200
+        enum O_NOCTTY       = 0x100;    // octal     0400
+        enum O_TRUNC        = 0x200;    // octal    01000
 
-    enum O_APPEND       = 0x400;  // octal  02000
-    enum O_NONBLOCK     = 0x800;  // octal  04000
-    enum O_SYNC         = 0x1000; // octal 010000
-    enum O_DSYNC        = O_SYNC;
-    enum O_RSYNC        = O_SYNC;
+        enum O_APPEND       = 0x400;    // octal    02000
+        enum O_NONBLOCK     = 0x800;    // octal    04000
+        enum O_SYNC         = 0x101000; // octal 04010000
+        enum O_DSYNC        = 0x1000;   // octal   010000
+        enum O_RSYNC        = O_SYNC;
+    }
+    else version (X86_64)
+    {
+        enum O_CREAT        = 0x40;     // octal     0100
+        enum O_EXCL         = 0x80;     // octal     0200
+        enum O_NOCTTY       = 0x100;    // octal     0400
+        enum O_TRUNC        = 0x200;    // octal    01000
+
+        enum O_APPEND       = 0x400;    // octal    02000
+        enum O_NONBLOCK     = 0x800;    // octal    04000
+        enum O_SYNC         = 0x101000; // octal 04010000
+        enum O_DSYNC        = 0x1000;   // octal   010000
+        enum O_RSYNC        = O_SYNC;
+    }
+    else version (MIPS32)
+    {
+        enum O_CREAT        = 0x0100;
+        enum O_EXCL         = 0x0400;
+        enum O_NOCTTY       = 0x0800;
+        enum O_TRUNC        = 0x0200;
+
+        enum O_APPEND       = 0x0008;
+        enum O_DSYNC        = O_SYNC;
+        enum O_NONBLOCK     = 0x0080;
+        enum O_RSYNC        = O_SYNC;
+        enum O_SYNC         = 0x0010;
+    }
+    else version (PPC)
+    {
+        enum O_CREAT        = 0x40;     // octal     0100
+        enum O_EXCL         = 0x80;     // octal     0200
+        enum O_NOCTTY       = 0x100;    // octal     0400
+        enum O_TRUNC        = 0x200;    // octal    01000
+
+        enum O_APPEND       = 0x400;    // octal    02000
+        enum O_NONBLOCK     = 0x800;    // octal    04000
+        enum O_SYNC         = 0x101000; // octal 04010000
+        enum O_DSYNC        = 0x1000;   // octal   010000
+        enum O_RSYNC        = O_SYNC;
+    }
+    else version (PPC64)
+    {
+        enum O_CREAT        = 0x40;     // octal     0100
+        enum O_EXCL         = 0x80;     // octal     0200
+        enum O_NOCTTY       = 0x100;    // octal     0400
+        enum O_TRUNC        = 0x200;    // octal    01000
+
+        enum O_APPEND       = 0x400;    // octal    02000
+        enum O_NONBLOCK     = 0x800;    // octal    04000
+        enum O_SYNC         = 0x101000; // octal 04010000
+        enum O_DSYNC        = 0x1000;   // octal   010000
+        enum O_RSYNC        = O_SYNC;
+    }
+    else version (ARM)
+    {
+        enum O_CREAT        = 0x40;     // octal     0100
+        enum O_EXCL         = 0x80;     // octal     0200
+        enum O_NOCTTY       = 0x100;    // octal     0400
+        enum O_TRUNC        = 0x200;    // octal    01000
+
+        enum O_APPEND       = 0x400;    // octal    02000
+        enum O_NONBLOCK     = 0x800;    // octal    04000
+        enum O_SYNC         = 0x101000; // octal 04010000
+        enum O_DSYNC        = 0x1000;   // octal   010000
+        enum O_RSYNC        = O_SYNC;
+    }
+    else version (AArch64)
+    {
+        enum O_CREAT        = 0x40;     // octal     0100
+        enum O_EXCL         = 0x80;     // octal     0200
+        enum O_NOCTTY       = 0x100;    // octal     0400
+        enum O_TRUNC        = 0x200;    // octal    01000
+
+        enum O_APPEND       = 0x400;    // octal    02000
+        enum O_NONBLOCK     = 0x800;    // octal    04000
+        enum O_SYNC         = 0x101000; // octal 04010000
+        enum O_DSYNC        = 0x1000;   // octal   010000
+        enum O_RSYNC        = O_SYNC;
+    }
+    else
+        static assert(0, "unimplemented");
 
     enum O_ACCMODE      = 0x3;
     enum O_RDONLY       = 0x0;
@@ -126,7 +217,7 @@ version( linux )
         pid_t   l_pid;
     }
 
-    static if( __USE_LARGEFILE64 )
+    static if( __USE_FILE_OFFSET64 )
     {
         int   creat64(in char*, mode_t);
         alias creat64 creat;

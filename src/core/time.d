@@ -12,10 +12,66 @@
     are a few functions that also allow "nsecs", but very little actually
     has precision greater than hnsecs.
 
+    $(BOOKTABLE Cheat Sheet,
+    $(TR $(TH Symbol) $(TH Description))
+    $(LEADINGROW Types)
+    $(TR $(TDNW $(LREF Duration)) $(TD Represents a duration of time of weeks
+    or less (kept internally as hnsecs). (e.g. 22 days or 700 seconds).))
+    $(TR $(TDNW $(LREF TickDuration)) $(TD Represents a duration of time in
+    system clock ticks, using the highest precision that the system provides.))
+    $(TR $(TDNW $(LREF FracSec)) $(TD Represents fractional seconds
+    (portions of time smaller than a second).))
+    $(LEADINGROW Functions)
+    $(TR $(TDNW $(LREF convert)) $(TD Generic way of converting between two
+    time units.))
+    $(TR $(TDNW $(LREF dur)) $(TD Allow constructing a $(LREF Duration) from
+    the given time units with the given length.))
+    $(TR $(TDNW $(LREF weeks)$(NBSP)$(LREF days)$(NBSP)$(LREF hours)$(BR)
+    $(LREF minutes)$(NBSP)$(LREF seconds)$(NBSP)$(LREF msecs)$(BR)
+    $(LREF usecs)$(NBSP)$(LREF hnsecs)$(NBSP)$(LREF nsecs))
+    $(TD Short-hands for $(D dur).))
+    $(TR $(TDNW $(LREF abs)) $(TD Returns the absolute value of a duration.))
+    )
+
+    $(BOOKTABLE Conversions,
+    $(TR $(TH )
+     $(TH From $(LREF Duration))
+     $(TH From $(LREF TickDuration))
+     $(TH From $(LREF FracSec))
+     $(TH From units)
+    )
+    $(TR $(TD $(B To $(LREF Duration)))
+     $(TD -)
+     $(TD $(D tickDuration.)$(SXREF conv, to)$(D !Duration()))
+     $(TD -)
+     $(TD $(D dur!"msecs"(5)) or $(D 5.msecs()))
+    )
+    $(TR $(TD $(B To $(LREF TickDuration)))
+     $(TD $(D duration.)$(SXREF conv, to)$(D !TickDuration()))
+     $(TD -)
+     $(TD -)
+     $(TD $(D TickDuration.from!"msecs"(msecs)))
+    )
+    $(TR $(TD $(B To $(LREF FracSec)))
+     $(TD $(D duration.fracSec))
+     $(TD -)
+     $(TD -)
+     $(TD $(D FracSec.from!"msecs"(msecs)))
+    )
+    $(TR $(TD $(B To units))
+     $(TD $(D duration.total!"days"))
+     $(TD $(D tickDuration.msecs))
+     $(TD $(D fracSec.msecs))
+     $(TD $(D convert!("days", "msecs")(msecs)))
+    ))
+
     Copyright: Copyright 2010 - 2012
     License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
     Authors:   Jonathan M Davis and Kato Shoichi
     Source:    $(DRUNTIMESRC core/_time.d)
+    Macros:
+    NBSP=&nbsp;
+    SXREF=<a href="std_$1.html#$2">$(D $2)</a>
  +/
 module core.time;
 
@@ -73,15 +129,15 @@ ulong mach_absolute_time();
     Use the $(LREF dur) function or on of its non-generic aliases to create
     $(D Duration)s.
 
-    You cannot create a duration of months or years because the variable number
-    of days in a month or a year makes it so that you cannot convert between
-    months or years and smaller units without a specific date. Any type or
-    function which handles months or years has other functions for handling
-    those rather than using durations. For instance, $(XREF datetime, Date) has
-    $(D addYears) and $(D addMonths) for adding years and months, rather than
-    creating a duration of years or months and adding that to a
-    $(XREF datetime, Date). If you're dealing with weeks or smaller, however,
-    durations are what you use.
+    It's not possible to create a Duration of months or years, because the
+    variable number of days in a month or year makes it impossible to convert
+    between months or years and smaller units without a specific date. So,
+    nothing uses $(D Duration)s when dealing with months or years. Rather,
+    functions specific to months and years are defined. For instance,
+    $(XREF datetime, Date) has $(D add!"years") and $(D add!"months") for adding
+    years and months rather than creating a Duration of years or months and
+    adding that to a $(XREF datetime, Date). But Duration is used when dealing
+    with weeks or smaller.
 
     Examples:
 --------------------
@@ -115,10 +171,28 @@ public:
       +/
     static @property @safe pure nothrow Duration zero() { return Duration(0); }
 
+    /++
+        Largest $(D Duration) possible.
+      +/
+    static @property @safe pure nothrow Duration max() { return Duration(long.max); }
+
+    /++
+        Most negative $(D Duration) possible.
+      +/
+    static @property @safe pure nothrow Duration min() { return Duration(long.min); }
+
     unittest
     {
         assert(zero == dur!"seconds"(0));
+        assert(Duration.max == Duration(long.max));
+        assert(Duration.min == Duration(long.min));
+        assert(Duration.min < Duration.zero);
+        assert(Duration.zero < Duration.max);
+        assert(Duration.min < Duration.max);
+        assert(Duration.min - dur!"hnsecs"(1) == Duration.max);
+        assert(Duration.max + dur!"hnsecs"(1) == Duration.min);
     }
+
 
     /++
         Compares this $(D Duration) with the given $(D Duration).
@@ -697,6 +771,9 @@ public:
     /++
         Returns a $(LREF TickDuration) with the same number of hnsecs as this
         $(D Duration).
+        Note that the conventional way to convert between $(D Duration) and
+        $(D TickDuration) is using $(XREF conv, to), e.g.:
+        $(D duration.to!TickDuration())
       +/
     TickDuration opCast(T)() @safe const pure nothrow
         if(is(_Unqual!T == TickDuration))
@@ -1215,91 +1292,52 @@ private:
       +/
     string _toStringImpl() @safe const pure nothrow
     {
-        long hnsecs = _hnsecs;
-
-        immutable weeks = splitUnitsFromHNSecs!"weeks"(hnsecs);
-        immutable days = splitUnitsFromHNSecs!"days"(hnsecs);
-        immutable hours = splitUnitsFromHNSecs!"hours"(hnsecs);
-        immutable minutes = splitUnitsFromHNSecs!"minutes"(hnsecs);
-        immutable seconds = splitUnitsFromHNSecs!"seconds"(hnsecs);
-        immutable milliseconds = splitUnitsFromHNSecs!"msecs"(hnsecs);
-        immutable microseconds = splitUnitsFromHNSecs!"usecs"(hnsecs);
-
-        try
+        static void appListSep(ref string res, uint pos, bool last) nothrow
         {
-            auto totalUnits = 0;
-
-            if(weeks != 0)
-                ++totalUnits;
-            if(days != 0)
-                ++totalUnits;
-            if(hours != 0)
-                ++totalUnits;
-            if(minutes != 0)
-                ++totalUnits;
-            if(seconds != 0)
-                ++totalUnits;
-            if(milliseconds != 0)
-                ++totalUnits;
-            if(microseconds != 0)
-                ++totalUnits;
-            if(hnsecs != 0)
-                ++totalUnits;
-
-            string retval;
-            auto unitsUsed = 0;
-
-            static string unitsToPrint(string units, bool plural)
-            {
-                if(units == "seconds")
-                    return plural ? "secs" : "sec";
-                else if(units == "msecs")
-                    return "ms";
-                else if(units == "usecs")
-                    return "μs";
-                else
-                    return plural ? units : units[0 .. $-1];
-            }
-
-            void addUnitStr(string units, long value)
-            {
-                if(value != 0)
-                {
-                    auto utp = unitsToPrint(units, value != 1);
-                    auto valueStr = numToString(value);
-
-                    if(unitsUsed == 0)
-                        retval ~= valueStr ~ " " ~ utp;
-                    else if(unitsUsed == totalUnits - 1)
-                    {
-                        if(totalUnits == 2)
-                            retval ~= " and " ~ valueStr ~ " " ~ utp;
-                        else
-                            retval ~= ", and " ~ valueStr ~ " " ~ utp;
-                    }
-                    else
-                        retval ~= ", " ~ valueStr ~ " " ~ utp;
-
-                    ++unitsUsed;
-                }
-            }
-
-            addUnitStr("weeks", weeks);
-            addUnitStr("days", days);
-            addUnitStr("hours", hours);
-            addUnitStr("minutes", minutes);
-            addUnitStr("seconds", seconds);
-            addUnitStr("msecs", milliseconds);
-            addUnitStr("usecs", microseconds);
-            addUnitStr("hnsecs", hnsecs);
-
-            if(retval.length == 0)
-                return "0 hnsecs";
-
-            return retval;
+            if (pos == 0)
+                return;
+            if (!last)
+                res ~= ", ";
+            else
+                res ~= pos == 1 ? " and " : ", and ";
         }
-        catch(Exception e)
-            assert(0, "Something threw when nothing can throw.");
+
+        static void appUnitVal(string units)(ref string res, long val) nothrow
+        {
+            immutable plural = val != 1;
+            string unit;
+            static if (units == "seconds")
+                unit = plural ? "secs" : "sec";
+            else static if (units == "msecs")
+                unit = "ms";
+            else static if (units == "usecs")
+                unit = "μs";
+            else
+                unit = plural ? units : units[0 .. $-1];
+            res ~= numToString(val) ~ " " ~ unit;
+        }
+
+        if (_hnsecs == 0) return "0 hnsecs";
+
+        template TT(T...) { alias T TT; }
+        alias units = TT!("weeks", "days", "hours", "minutes", "seconds", "msecs", "usecs");
+
+        long hnsecs = _hnsecs; string res; uint pos;
+        foreach (unit; units)
+        {
+            if (auto val = splitUnitsFromHNSecs!unit(hnsecs))
+            {
+                appListSep(res, pos++, hnsecs == 0);
+                appUnitVal!unit(res, val);
+            }
+            if (hnsecs == 0) break;
+        }
+        if (hnsecs != 0)
+        {
+            appListSep(res, pos++, true);
+            appUnitVal!"hnsecs"(res, hnsecs);
+        }
+        return res;
     }
 
 
@@ -1372,15 +1410,15 @@ Duration dur(string units)(long length) @safe pure nothrow
     return Duration(convert!(units, "hnsecs")(length));
 }
 
-alias dur!"weeks"   weeks;   /// Ditto
-alias dur!"days"    days;    /// Ditto
-alias dur!"hours"   hours;   /// Ditto
-alias dur!"minutes" minutes; /// Ditto
-alias dur!"seconds" seconds; /// Ditto
-alias dur!"msecs"   msecs;   /// Ditto
-alias dur!"usecs"   usecs;   /// Ditto
-alias dur!"hnsecs"  hnsecs;  /// Ditto
-alias dur!"nsecs"   nsecs;   /// Ditto
+alias weeks   = dur!"weeks";   /// Ditto
+alias days    = dur!"days";    /// Ditto
+alias hours   = dur!"hours";   /// Ditto
+alias minutes = dur!"minutes"; /// Ditto
+alias seconds = dur!"seconds"; /// Ditto
+alias msecs   = dur!"msecs";   /// Ditto
+alias usecs   = dur!"usecs";   /// Ditto
+alias hnsecs  = dur!"hnsecs";  /// Ditto
+alias nsecs   = dur!"nsecs";   /// Ditto
 
 //Verify Examples.
 unittest
@@ -1468,9 +1506,26 @@ struct TickDuration
       +/
     static @property @safe pure nothrow TickDuration zero() { return TickDuration(0); }
 
+    /++
+        Largest $(D TickDuration) possible.
+      +/
+    static @property @safe pure nothrow TickDuration max() { return TickDuration(long.max); }
+
+    /++
+        Most negative $(D TickDuration) possible.
+      +/
+    static @property @safe pure nothrow TickDuration min() { return TickDuration(long.min); }
+
     unittest
     {
         assert(zero == TickDuration(0));
+        assert(TickDuration.max == TickDuration(long.max));
+        assert(TickDuration.min == TickDuration(long.min));
+        assert(TickDuration.min < TickDuration.zero);
+        assert(TickDuration.zero < TickDuration.max);
+        assert(TickDuration.min < TickDuration.max);
+        assert(TickDuration.min - TickDuration(1) == TickDuration.max);
+        assert(TickDuration.max + TickDuration(1) == TickDuration.min);
     }
 
 
@@ -1663,11 +1718,11 @@ struct TickDuration
         {
             foreach(T; _TypeTuple!(TickDuration, const TickDuration, immutable TickDuration))
             {
-                assertApprox((cast(T)TickDuration).from!units(1000).to!(units, long)(),
+                assertApprox((cast(T)TickDuration.from!units(1000)).to!(units, long)(),
                              500, 1500, units);
-                assertApprox((cast(T)TickDuration).from!units(1_000_000).to!(units, long)(),
+                assertApprox((cast(T)TickDuration.from!units(1_000_000)).to!(units, long)(),
                              900_000, 1_100_000, units);
-                assertApprox((cast(T)TickDuration).from!units(2_000_000).to!(units, long)(),
+                assertApprox((cast(T)TickDuration.from!units(2_000_000)).to!(units, long)(),
                              1_900_000, 2_100_000, units);
             }
         }
@@ -1677,6 +1732,9 @@ struct TickDuration
     /++
         Returns a $(LREF Duration) with the same number of hnsecs as this
         $(D TickDuration).
+        Note that the conventional way to convert between $(D TickDuration)
+        and $(D Duration) is using $(XREF conv, to), e.g.:
+        $(D tickDuration.to!Duration())
       +/
     Duration opCast(T)() @safe const pure nothrow
         if(is(_Unqual!T == Duration))
@@ -2144,9 +2202,9 @@ struct TickDuration
     of days in a month or year).
 
     Params:
-        tuFrom = The units of time to covert from.
-        tuFrom = The units of time to covert type.
-        value  = The value to convert.
+        from  = The units of time to convert from.
+        to    = The units of time to convert to.
+        value = The value to convert.
 
     Examples:
 --------------------
@@ -2911,7 +2969,7 @@ class TimeException : Exception
             line = The line number where the exception occurred.
             next = The previous exception in the chain of exceptions, if any.
       +/
-    nothrow this(string msg, string file = __FILE__, size_t line = __LINE__, Throwable next = null)
+    @safe pure nothrow this(string msg, string file = __FILE__, size_t line = __LINE__, Throwable next = null)
     {
         super(msg, file, line, next);
     }

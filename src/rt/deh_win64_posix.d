@@ -2,57 +2,31 @@
  * Written in the D programming language.
  * Implementation of exception handling support routines for Posix and Win64.
  *
- * Copyright: Copyright Digital Mars 2000 - 2012.
+ * Copyright: Copyright Digital Mars 2000 - 2013.
  * License: Distributed under the
  *      $(LINK2 http://www.boost.org/LICENSE_1_0.txt, Boost Software License 1.0).
  *    (See accompanying file LICENSE)
  * Authors:   Walter Bright, Sean Kelly
- * Source: $(DRUNTIMESRC src/rt/_deh2.d)
+ * Source: $(DRUNTIMESRC src/rt/deh_win64_posix.d)
  */
 
-module rt.deh2;
+module rt.deh_win64_posix;
 
+version (Win64)
+    version = Win64_Posix;
 version (Posix)
-{
-    version = deh2;
-}
-else version (Win64)
-{
-    version = deh2;
-}
+    version = Win64_Posix;
 
-// Use deh.d for Win32
+version (Win64_Posix):
 
-version (deh2)
-{
-
-//debug=1;
-debug import core.stdc.stdio : printf;
+//debug=PRINTF;
+debug(PRINTF) import core.stdc.stdio : printf;
 
 extern (C)
 {
-    version (OSX)
-    {
-        // Set by rt.memory_osx.onAddImage()
-        __gshared ubyte[] _deh_eh_array;
-    }
-    else
-    {
-        extern __gshared
-        {
-            /* Symbols created by the compiler and inserted into the object file
-             * that 'bracket' the __deh_eh segment
-             */
-            void* _deh_beg;
-            void* _deh_end;
-        }
-    }
-
     Throwable.TraceInfo _d_traceContext(void* ptr = null);
-
     int _d_isbaseof(ClassInfo oc, ClassInfo c);
-
-    void _d_createTrace(Object*);
+    void _d_createTrace(Object o, void* context);
 }
 
 alias int function() fp_t;   // function pointer in ambient memory model
@@ -128,22 +102,24 @@ void terminate()
  * Return DHandlerTable if there is one, NULL if not.
  */
 
-FuncTable *__eh_finddata(void *address)
+immutable(FuncTable)* __eh_finddata(void *address)
 {
-    debug printf("FuncTable.sizeof = %p\n", FuncTable.sizeof);
-    debug printf("__eh_finddata(address = %p)\n", address);
+    import rt.sections;
+    foreach (ref sg; SectionGroup)
+    {
+        auto pstart = sg.ehTables.ptr;
+        auto pend = pstart + sg.ehTables.length;
+        if (auto ft = __eh_finddata(address, pstart, pend))
+            return ft;
+    }
+    return null;
+}
 
-    version (OSX)
-    {
-        auto pstart = cast(FuncTable *)_deh_eh_array.ptr;
-        auto pend   = cast(FuncTable *)(_deh_eh_array.ptr + _deh_eh_array.length);
-    }
-    else
-    {
-        auto pstart = cast(FuncTable *)&_deh_beg;
-        auto pend   = cast(FuncTable *)&_deh_end;
-    }
-    debug printf("_deh_beg = %p, _deh_end = %p\n", pstart, pend);
+immutable(FuncTable)* __eh_finddata(void *address, immutable(FuncTable)* pstart, immutable(FuncTable)* pend)
+{
+    debug(PRINTF) printf("FuncTable.sizeof = %p\n", FuncTable.sizeof);
+    debug(PRINTF) printf("__eh_finddata(address = %p)\n", address);
+    debug(PRINTF) printf("_deh_beg = %p, _deh_end = %p\n", pstart, pend);
 
     for (auto ft = pstart; 1; ft++)
     {
@@ -159,15 +135,15 @@ FuncTable *__eh_finddata(void *address)
              */
             if (ft.fptr == null)
             {
-                ft = cast(FuncTable *)(cast(void**)ft + 1);
+                ft = cast(immutable(FuncTable)*)(cast(void**)ft + 1);
                 goto Lagain;
             }
         }
 
-        debug printf("  ft = %p, fptr = %p, handlertable = %p, fsize = x%03x\n",
+        debug(PRINTF) printf("  ft = %p, fptr = %p, handlertable = %p, fsize = x%03x\n",
               ft, ft.fptr, ft.handlertable, ft.fsize);
 
-        void *fptr = ft.fptr;
+        immutable(void)* fptr = ft.fptr;
         version (Win64)
         {
             /* If linked with /DEBUG, the linker rewrites it so the function pointer points
@@ -183,11 +159,11 @@ FuncTable *__eh_finddata(void *address)
         if (fptr <= address &&
             address < cast(void *)(cast(char *)fptr + ft.fsize))
         {
-            debug printf("\tfound handler table\n");
+            debug(PRINTF) printf("\tfound handler table\n");
             return ft;
         }
     }
-    debug printf("\tnot found\n");
+    debug(PRINTF) printf("\tnot found\n");
     return null;
 }
 
@@ -225,11 +201,11 @@ size_t __eh_find_caller(size_t regbp, size_t *pretaddr)
  * Throw a D object.
  */
 
-extern (C) void _d_throwc(Object *h)
+extern (C) void _d_throwc(Object h)
 {
     size_t regebp;
 
-    debug
+    debug(PRINTF)
     {
         printf("_d_throw(h = %p, &h = %p)\n", h, &h);
         printf("\tvptr = %p\n", *cast(void **)h);
@@ -248,7 +224,7 @@ extern (C) void _d_throwc(Object *h)
     else
         static assert(0);
 
-    _d_createTrace(h);
+    _d_createTrace(h, null);
 
 //static uint abc;
 //if (++abc == 2) *(char *)0=0;
@@ -261,17 +237,17 @@ extern (C) void _d_throwc(Object *h)
         regebp = __eh_find_caller(regebp,&retaddr);
         if (!regebp)
         {   // if end of call chain
-            debug printf("end of call chain\n");
+            debug(PRINTF) printf("end of call chain\n");
             break;
         }
 
-        debug printf("found caller, EBP = %p, retaddr = %p\n", regebp, retaddr);
+        debug(PRINTF) printf("found caller, EBP = %p, retaddr = %p\n", regebp, retaddr);
 //if (++count == 12) *(char*)0=0;
         auto func_table = __eh_finddata(cast(void *)retaddr);   // find static data associated with function
         auto handler_table = func_table ? func_table.handlertable : null;
         if (!handler_table)         // if no static data
         {
-            debug printf("no handler table\n");
+            debug(PRINTF) printf("no handler table\n");
             continue;
         }
         auto funcoffset = cast(size_t)func_table.fptr;
@@ -289,7 +265,7 @@ extern (C) void _d_throwc(Object *h)
         auto spoff = handler_table.espoffset;
         auto retoffset = handler_table.retoffset;
 
-        debug
+        debug(PRINTF)
         {
             printf("retaddr = %p\n", retaddr);
             printf("regebp=%p, funcoffset=%p, spoff=x%x, retoffset=x%x\n",
@@ -299,10 +275,10 @@ extern (C) void _d_throwc(Object *h)
         // Find start index for retaddr in static data
         auto dim = handler_table.nhandlers;
 
-        debug
+        debug(PRINTF)
         {
             printf("handler_info[%d]:\n", dim);
-            for (int i = 0; i < dim; i++)
+            for (uint i = 0; i < dim; i++)
             {
                 auto phi = &handler_table.handler_info.ptr[i];
                 printf("\t[%d]: offset = x%04x, endoffset = x%04x, prev_index = %d, cioffset = x%04x, finally_offset = %x\n",
@@ -311,21 +287,21 @@ extern (C) void _d_throwc(Object *h)
         }
 
         auto index = -1;
-        for (int i = 0; i < dim; i++)
+        for (uint i = 0; i < dim; i++)
         {
             auto phi = &handler_table.handler_info.ptr[i];
 
-            debug printf("i = %d, phi.offset = %04x\n", i, funcoffset + phi.offset);
+            debug(PRINTF) printf("i = %d, phi.offset = %04x\n", i, funcoffset + phi.offset);
             if (retaddr > funcoffset + phi.offset &&
                 retaddr <= funcoffset + phi.endoffset)
                 index = i;
         }
-        debug printf("index = %d\n", index);
+        debug(PRINTF) printf("index = %d\n", index);
 
         if (dim)
         {
             auto phi = &handler_table.handler_info.ptr[index+1];
-            debug printf("next finally_offset %p\n", phi.finally_offset);
+            debug(PRINTF) printf("next finally_offset %p\n", phi.finally_offset);
             auto prev = cast(InFlight*) &__inflight;
             auto curr = prev.next;
 
@@ -334,7 +310,7 @@ extern (C) void _d_throwc(Object *h)
                 auto e = cast(Error)(cast(Throwable) h);
                 if (e !is null && (cast(Error) curr.t) is null)
                 {
-                    debug printf("new error %p bypassing inflight %p\n", h, curr.t);
+                    debug(PRINTF) printf("new error %p bypassing inflight %p\n", h, curr.t);
 
                     e.bypassedException = curr.t;
                     prev.next = curr.next;
@@ -342,7 +318,7 @@ extern (C) void _d_throwc(Object *h)
                 }
                 else
                 {
-                    debug printf("replacing thrown %p with inflight %p\n", h, __inflight.t);
+                    debug(PRINTF) printf("replacing thrown %p with inflight %p\n", h, __inflight.t);
 
                     auto t = curr.t;
                     auto n = curr.t;
@@ -351,7 +327,7 @@ extern (C) void _d_throwc(Object *h)
                         n = n.next;
                     n.next = cast(Throwable) h;
                     prev.next = curr.next;
-                    h = cast(Object*) t;
+                    h = t;
                 }
             }
         }
@@ -369,7 +345,7 @@ extern (C) void _d_throwc(Object *h)
 
                 auto pci = cast(DCatchInfo *)(cast(char *)handler_table + phi.cioffset);
                 auto ncatches = pci.ncatches;
-                for (int i = 0; i < ncatches; i++)
+                for (uint i = 0; i < ncatches; i++)
                 {
                     auto ci = **cast(ClassInfo **)h;
 
@@ -380,7 +356,7 @@ extern (C) void _d_throwc(Object *h)
                         // Matched the catch type, so we've found the handler.
 
                         // Initialize catch variable
-                        *cast(void **)(regebp + (pcb.bpoffset)) = h;
+                        *cast(void **)(regebp + (pcb.bpoffset)) = cast(void*)h;
 
                         // Jump to catch block. Does not return.
                         {
@@ -421,7 +397,7 @@ extern (C) void _d_throwc(Object *h)
                 // Call finally block
                 // Note that it is unnecessary to adjust the ESP, as the finally block
                 // accesses all items on the stack as relative to EBP.
-                debug printf("calling finally_offset %p\n", phi.finally_offset);
+                debug(PRINTF) printf("calling finally_offset %p\n", phi.finally_offset);
 
                 auto     blockaddr = cast(void*)(funcoffset + phi.finally_offset);
                 InFlight inflight;
@@ -500,4 +476,3 @@ extern (C) void _d_throwc(Object *h)
     terminate();
 }
 
-}
